@@ -38,6 +38,7 @@ import sinanmap.common.waypoint.Waypoint;
 import sinanmap.client.map.data.ClientChunkColorProvider;
 import sinanmap.client.map.data.MapStorage;
 import sinanmap.client.map.render.MarkerRenderer;
+import sinanmap.client.map.render.TilePage;
 import sinanmap.client.map.render.TileVariants;
 import sinanmap.client.map.render.WorldTilePages;
 import sinanmap.client.radar.EntityRadar;
@@ -698,7 +699,7 @@ public final class MinimapHud {
 
 		// 这一轮碰到的页：一张页只传一次，别为同一页反复调 upload（每次都是 1 MB）
 		int touched = 0;
-		WorldTilePages.Page[] pages = touchedPages;
+		TilePage[] pages = touchedPages;
 		int uploads = 0;
 		while (fillSweep.hasNext() && !colorProvider.isWarmSpent()) {
 			if (!fillSweep.inRange()) {
@@ -706,7 +707,7 @@ public final class MinimapHud {
 				fillSweep.advance();
 				continue;
 			}
-			WorldTilePages.Page page = tiles.fillChunkNow(layer,
+			TilePage page = tiles.fillChunkNow(layer,
 					viewMinChunkX + fillSweep.x(), viewMinChunkZ + fillSweep.y());
 			if (page == null) {
 				// 这一轮的建数据预算用尽：剩下的下一帧再来
@@ -737,7 +738,7 @@ public final class MinimapHud {
 	}
 
 	/** {@link #warmVisible} 的临时表：一屏最多几个页，够用。 */
-	private final WorldTilePages.Page[] touchedPages = new WorldTilePages.Page[8];
+	private final TilePage[] touchedPages = new TilePage[8];
 
 	/**
 	 * 把小地图覆盖到的页贴到屏幕上。
@@ -765,7 +766,7 @@ public final class MinimapHud {
 		pose.translate((float) -playerX, (float) -playerZ);
 		for (int pageZ = viewMinPageZ; pageZ <= viewMaxPageZ; pageZ++) {
 			for (int pageX = viewMinPageX; pageX <= viewMaxPageX; pageX++) {
-				WorldTilePages.Page page = tiles.find(layer, pageX, pageZ);
+				TilePage page = tiles.find(layer, pageX, pageZ);
 				if (page == null || !page.loaded()) {
 					continue;
 				}

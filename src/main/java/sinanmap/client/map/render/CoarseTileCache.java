@@ -36,7 +36,7 @@ final class CoarseTileCache {
 	interface Host {
 
 		/** 取"更细那一档"的某一页（叶页坐标）；没有就返回 null。 */
-		WorldTilePages.Page finerPage(int layer, int pageX, int pageZ);
+		TilePage finerPage(int layer, int pageX, int pageZ);
 
 		/** 这一档这一页的键（与叶页同一套坐标，档作为一个分量）。 */
 		long coarseKey(int layer, int blocksPerPixel, int pageX, int pageZ);
@@ -158,14 +158,8 @@ final class CoarseTileCache {
 	}
 
 	/**
-	 * 粗页填充顺序（每档一张）：<b>区块优先、区块内 8×8 或 4×4 像素</b>。
-	 *
-	 * <p>页与页之间仍是"固定坐标顺序、不看朝向"，与叶页同一口径。
-	 *
-	 * <p><b>但页内顺序不能照抄叶页的列优先。</b>粗页一个像素覆盖多个方块，一个区块占
-	 * {@code pixelsPerChunk}² 个粗像素：按列优先扫会把同一区块的像素拉成一条竖线、跨区块时缓存反复失效。
-	 * 区块优先后同一区块的像素连续处理、换区块才失效一次，{@link #fillCoarse} 里那个区块缓存才真正起作用
-	 * （{@code shadeChunkPair} 是重的）。
+	 * 粗页填充顺序（每档一张）：走向与"为什么不照抄叶页"写在
+	 * {@link TileSweepOrder#coarseChunkMajor} 那里——页内的推进顺序全工程只此一处。
 	 */
 	private static final int[] COARSE_SWEEP_2 = buildCoarseChunkMajor(WorldTilePages.COARSE_TIER_2);
 	private static final int[] COARSE_SWEEP_4 = buildCoarseChunkMajor(WorldTilePages.COARSE_TIER_4);
@@ -175,30 +169,13 @@ final class CoarseTileCache {
 		return blocksPerPixel == WorldTilePages.COARSE_TIER_2 ? COARSE_SWEEP_2 : COARSE_SWEEP_4;
 	}
 
-	/**
-	 * 生成某一档的填充顺序表：把 {@code pixelsPerChunk}² 个像素归到同一区块里连续访问，区块之间按固定
-	 * 坐标顺序。存的是原始像素索引 {@code pixelZ * size + pixelX}，与 {@link #fillCoarse} 的换算配套。
-	 */
+	/** 生成某一档的顺序表：把参数折成"贴图边长 / 每区块像素 / 每边区块数"交给 {@link TileSweepOrder}。 */
 	private static int[] buildCoarseChunkMajor(int blocksPerPixel) {
-		int size = WorldTilePages.coarseSize(blocksPerPixel);
-		int pixelsPerChunk = tierPixelsPerChunk(blocksPerPixel);
-		// 一张粗页管 COARSE_PACK×COARSE_PACK 张叶页格位，区块数也跟着乘上来
-		int chunks = WorldTilePages.PAGE_CHUNKS * WorldTilePages.COARSE_PACK;
-		int[] order = new int[size * size];
-		int step = 0;
-		for (int cx = 0; cx < chunks; cx++) {
-			for (int cz = 0; cz < chunks; cz++) {
-				// 区块内像素整体走完，保证同一区块的像素紧挨着（缓存只在换区块时失效）
-				for (int pz = 0; pz < pixelsPerChunk; pz++) {
-					for (int px = 0; px < pixelsPerChunk; px++) {
-						int pixelX = cx * pixelsPerChunk + px;
-						int pixelZ = cz * pixelsPerChunk + pz;
-						order[step++] = pixelZ * size + pixelX;
-					}
-				}
-			}
-		}
-		return order;
+		return TileSweepOrder.coarseChunkMajor(
+				WorldTilePages.coarseSize(blocksPerPixel),
+				tierPixelsPerChunk(blocksPerPixel),
+				// 一张粗页管 COARSE_PACK×COARSE_PACK 张叶页格位，区块数也跟着乘上来
+				WorldTilePages.PAGE_CHUNKS * WorldTilePages.COARSE_PACK);
 	}
 
 	/**
@@ -420,7 +397,7 @@ final class CoarseTileCache {
 		// 扫描是区块优先的，同一个叶页的像素连着走，所以按"叶页变了没有"缓存。
 		int cachedFinePageX = Integer.MIN_VALUE;
 		int cachedFinePageZ = Integer.MIN_VALUE;
-		WorldTilePages.Page finer = null;
+		TilePage finer = null;
 		NativeImage finerDay = null;
 		NativeImage finerNight = null;
 		int painted = 0;

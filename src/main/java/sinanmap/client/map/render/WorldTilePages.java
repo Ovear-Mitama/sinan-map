@@ -101,9 +101,9 @@ public final class WorldTilePages implements Closeable {
 	 * <p>淘汰一页只回收显存贴图、像素留在堆里（见 {@link SmoothedDynamicTexture#releaseGpu()}）；"移出去
 	 * 再回来"只需把显存要回来上传一次，不必重新采样着色。按访问顺序 LRU，超容量的连像素一起释放。
 	 */
-	private final Map<Long, Page> cold = new LinkedHashMap<>(64, 0.75F, true) {
+	private final Map<Long, TilePage> cold = new LinkedHashMap<>(64, 0.75F, true) {
 		@Override
-		protected boolean removeEldestEntry(Map.Entry<Long, Page> eldest) {
+		protected boolean removeEldestEntry(Map.Entry<Long, TilePage> eldest) {
 			if (size() <= capacity) {
 				return false;
 			}
@@ -123,7 +123,7 @@ public final class WorldTilePages implements Closeable {
 	private final ClientChunkColorProvider colors;
 
 	/** 常驻页：显存里有贴图，随时可画。 */
-	private final Map<Long, Page> resident = new LinkedHashMap<>(64, 0.75F, true);
+	private final Map<Long, TilePage> resident = new LinkedHashMap<>(64, 0.75F, true);
 
 	/**
 	 * 不允许被淘汰的页范围（当前视野加预取余量，以及小地图那一屏）——淘汰任何一页前都要先问它，
@@ -158,7 +158,7 @@ public final class WorldTilePages implements Closeable {
 	 */
 	private final CoarseTileCache.Host coarseHost = new CoarseTileCache.Host() {
 		@Override
-		public Page finerPage(int layer, int pageX, int pageZ) {
+		public TilePage finerPage(int layer, int pageX, int pageZ) {
 			return finePage(layer, pageX, pageZ);
 		}
 
@@ -198,228 +198,6 @@ public final class WorldTilePages implements Closeable {
 	/** 一页的贴图从哪来、什么时候能丢，见 {@link TileTexturePool}（含"每张图四个名字"的细节）。 */
 	private final TileTexturePool texturePool = new TileTexturePool();
 
-	/** 一页瓦片：白天与夜晚各一张贴图，绘制时按当前天色混合。 */
-	public static final class Page {
-
-		private final TileVariants textures;
-
-		/**
-		 * 这一页挂在哪一层的键上，即<b>归档层</b>（见 {@link #keyLayer}；地表是哨兵）。
-		 *
-		 * <p>它<b>不是</b>像素所在的那个精确高度（那是 {@link #pixelHeight}）：洞穴里上下 1 格会变高度、
-		 * 但归档层不变，所以页对象与页键都不动——"下潜一格不必重新过一遍加载"。
-		 *
-		 * <p>换<b>归档档</b>时会"改挂"到新档（见 {@link #adoptPreviousBandPage}），所以不是 final。
-		 */
-		private int layer;
-
-		/**
-		 * 这些像素是按哪个<b>精确层高</b>画的（地表页就是地表哨兵）。
-		 *
-		 * <p>同一归档档内上下移动时页键不变、像素却按上一格的高度画，所以记在页上：
-		 * {@link #refreshCaveHeight} 据此判断"该不该把某些区块作废重填"。
-		 */
-		private int pixelHeight;
-
-		private final int pageX;
-		private final int pageZ;
-
-		/** 每个区块问过了没有（"有数据"与"确认没有数据"都算问过）。 */
-		private final boolean[] filled = new boolean[PAGE_CHUNK_COUNT];
-
-		/**
-		 * 这一块<b>画上的是地形</b>（而不是涂成"没有数据"的空洞）。
-		 *
-		 * <p>单独记是因为 {@link #retryUnexplored} 要挑出"重新问一遍"的块：以前去读贴图角落像素，
-		 * 但一整块里只要有一列没数据（洞穴里实心岩层那一列就是）角落就是透明的，于是好页被反复挑出来重填。
-		 *
-		 * <p>与 {@link #filled} 的区别：数据"正在来的路上"时两个都是 false；确认没有数据时
-		 * {@code filled=true, hasTerrain=false}；画上地形时两个都是 true。
-		 */
-		private final boolean[] hasTerrain = new boolean[PAGE_CHUNK_COUNT];
-
-		/**
-		 * 这一格的贴图里<b>现在是不是地形像素</b>（可能来自上一格高度）。
-		 *
-		 * <p>与 {@link #hasTerrain} 的区别：{@code hasTerrain} 表示"这一格的数据就是当前高度的、
-		 * 画的确实是地形"，{@code retryUnexplored} 靠它挑出需要重问的块；这一张只回答"像素里有没有东西"。
-		 *
-		 * <p>洞穴换高度时会出现两者不一致的时刻：那一格的旧像素还在（{@code painted = true}），但它已经
-		 * 不代表当前高度了（{@code hasTerrain = false}）。这时重画若发现新高度那边没洞可画，
-		 * 就<b>留着旧像素</b>、不涂成未探明——否则一页里会同时闪出一片黑。
-		 */
-		private final boolean[] painted = new boolean[PAGE_CHUNK_COUNT];
-
-		/**
-		 * 这一页有没有<b>真的画出过一块地形</b>（不是"确认没有数据"的空洞）。
-		 *
-		 * <p>加载指示据此把"在等真数据"与"外周根本没数据"分开：一页全是空洞、数据永远排不到时不该继续
-		 * 转圈。单调只置 true 不清——"曾经出过地形"就是"这一片确实有数据"的凭据。
-		 */
-		private boolean everTerrain;
-
-		/**
-		 * 页内填充推进到第几步（步到块的映射见 {@link #SWEEP_ORDER}）。
-		 *
-		 * <p>页内<b>固定顺序</b>：列优先，不看朝向；"近的先出来"由<b>页与页之间</b>的顺序保证。
-		 *
-		 * <p>试过"以玩家为中心由内向外"：一页 512 方块见方，由内向外会让四条边最后才填上，画面上每个
-		 * 区域边缘一圈一直黑着——比固定顺序更怪。
-		 */
-		private int fillCursor;
-
-		/**
-		 * <b>问过、但结果还没到</b>的块（数据在路上；也包括"请求没排上"：见 {@link #fillOne}）。
-		 *
-		 * <p>按块记布尔而不是排队表：排队表只认队首——队首没到时整队停着，表只涨不消，涨到上限后新块被
-		 * 静默丢掉，那些块既没画上也不在待办里，整页看上去却"填完了"（"加载了一点就再也不动"）。按块记
-		 * 则重复标记无害、不会丢、也没有队首阻塞。
-		 */
-		private final boolean[] pending = new boolean[PAGE_CHUNK_COUNT];
-
-		/** {@link #pending} 里有多少个 true（{@link #hasWork} 与加载指示都看它）。 */
-		private int pendingCount;
-
-		/** 补画 {@link #pending} 的轮转游标：一块没到数据也不会挡住后面的块。 */
-		private int pendingCursor;
-
-		/** 记下"这一块还没问出结果"。重复标记无副作用。 */
-		private void markPending(int index) {
-			if (!pending[index]) {
-				pending[index] = true;
-				pendingCount++;
-			}
-		}
-
-		/** 这一块的结果到了、也画上了。 */
-		private void clearPending(int index) {
-			if (pending[index]) {
-				pending[index] = false;
-				pendingCount--;
-			}
-		}
-
-		/** 画上地形的块数（诊断用：按需数一遍，省得维护一个容易数错的计数器）。 */
-		public int terrainCount() {
-			int count = 0;
-			for (boolean painted : hasTerrain) {
-				if (painted) {
-					count++;
-				}
-			}
-			return count;
-		}
-
-		/** 问过的块数（含确认没有数据的空洞）。 */
-		public int decidedCount() {
-			int count = 0;
-			for (boolean decided : filled) {
-				if (decided) {
-					count++;
-				}
-			}
-			return count;
-		}
-
-		/** 还在等数据的块数（诊断用，见 {@code WorldMapScreen#logComposition}）。 */
-		public int pendingCount() {
-			return pendingCount;
-		}
-
-		/** {@link #retryUnexplored} 的轮转游标，见那里。 */
-		private int retryCursor;
-
-		/** 有没有写过像素。刚建出来或刚被回收的页是空的，不必浪费一次绘制。 */
-		private boolean loaded;
-
-		/** 第一次写上像素的时刻；绘制时据此做"整页淡入"。0 表示还没写过。 */
-		private long loadedAtNanos;
-
-		/** 白天/夜晚两张贴图<b>各自</b>有没有改动没传到显存（只传当前要画的那张，见 {@link #upload}）。 */
-		private boolean dirtyDay = true;
-		private boolean dirtyNight = true;
-
-		/** 上一次往这一页写像素的时刻：页还在陆续来数据时先不上传，靠它判断"静下来了没有"。 */
-		private long paintedAtNanos;
-
-		private Page(TileVariants textures, int layer, int pixelHeight, int pageX, int pageZ) {
-			this.textures = textures;
-			this.layer = layer;
-			this.pixelHeight = pixelHeight;
-			this.pageX = pageX;
-			this.pageZ = pageZ;
-		}
-
-		public TileVariants textures() {
-			return textures;
-		}
-
-		/** 逐块的"问过了没有"表。<b>只读</b>：粗页降采样时要看更细那一页画过这一块没有。 */
-		boolean[] filled() {
-			return filled;
-		}
-
-		/** 这一块画的是不是地形（而不是"确认没有数据"的空洞），见 {@link #hasTerrain}。 */
-		boolean hasTerrain(int index) {
-			return hasTerrain[index];
-		}
-
-		int layer() {
-			return layer;
-		}
-
-		/** 这些像素是按哪个精确层高画的。 */
-		int pixelHeight() {
-			return pixelHeight;
-		}
-
-		/**
-		 * 把"这批像素是按哪个精确高度画的"改成新值。
-		 *
-		 * <p>只改这个记号，<b>像素原样留着</b>；要不要作废某些区块由调用方先问
-		 * {@code ClientChunkColorProvider#caveSliceCovers} 决定（见 {@link #refreshCaveHeight}）。
-		 * 归档层（{@link #layer}）是页键的一部分，不在这里改。
-		 */
-		private void setPixelHeight(int newPixelHeight) {
-			this.pixelHeight = newPixelHeight;
-		}
-
-		/**
-		 * 把这一页改挂到另一个归档档：只换键层。
-		 *
-		 * <p>{@link #pixelHeight}（像素是按哪个精确高度画的）<b>刻意不动</b>——紧接着的
-		 * {@link #refreshCaveHeight} 正是拿它当"旧高度"，去问哪些区块的结果真的变了。
-		 */
-		private void retarget(int newLayer) {
-			this.layer = newLayer;
-		}
-
-		public boolean loaded() {
-			return loaded;
-		}
-
-		/** 第一次写上像素的时刻，用于"整页淡入"；0 表示还没写过。 */
-		public long loadedAtNanos() {
-			return loadedAtNanos;
-		}
-
-		/**
-		 * 从淘汰集合里回到常驻：把显存要回来并把堆里现有的像素传上去。
-		 *
-		 * <p>只有一次上传，没有采样、没有着色——这就是"移出去再回来不再重新加载"的全部代价。
-		 */
-		private void reacquire() {
-			textures.reacquireGpu();
-			dirtyDay = false;
-			dirtyNight = false;
-		}
-
-		/** 只回收显存，像素留着，见 {@link TileVariants#releaseGpu()}。 */
-		private void releaseGpu() {
-			textures.releaseGpu();
-		}
-	}
-
 	/**
 	 * 取一页；没有就新建一张空白页。
 	 *
@@ -427,14 +205,14 @@ public final class WorldTilePages implements Closeable {
 	 * 要回来，它<b>立刻就是画好的</b>。拿到页后还要按<b>精确层高</b>校准一次（见 {@link #refreshCaveHeight}）：
 	 * 页键是归档层，同档内上下移动时页键不变、像素却可能过时。
 	 */
-	public Page page(int layer, int pageX, int pageZ) {
+	public TilePage page(int layer, int pageX, int pageZ) {
 		long key = key(layer, 0, pageX, pageZ);
-		Page found = resident.get(key);
+		TilePage found = resident.get(key);
 		if (found != null) {
 			refreshCaveHeight(found, layer);
 			return found;
 		}
-		Page recycled = cold.remove(key);
+		TilePage recycled = cold.remove(key);
 		if (recycled != null) {
 			recycled.reacquire();
 			refreshCaveHeight(recycled, layer);
@@ -443,9 +221,9 @@ public final class WorldTilePages implements Closeable {
 			return recycled;
 		}
 		// 换归档档：把上一档的同一页整页拿过来继续用（连像素一起），只作废结果真的变了的区块
-		Page adopted = adoptPreviousBandPage(layer, pageX, pageZ);
-		Page created = adopted != null ? adopted
-				: new Page(texturePool.obtain(PAGE_BLOCKS), keyLayer(layer), layer, pageX, pageZ);
+		TilePage adopted = adoptPreviousBandPage(layer, pageX, pageZ);
+		TilePage created = adopted != null ? adopted
+				: new TilePage(texturePool.obtain(PAGE_BLOCKS), keyLayer(layer), layer, pageX, pageZ);
 		if (adopted != null) {
 			// 改挂过来的像素还是按"上一格那个高度"画的，紧接着按当前高度校准一次（见 refreshCaveHeight）
 			refreshCaveHeight(created, layer);
@@ -480,7 +258,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * @return 没有可挂的上一档页时返回 null（首次进洞、从地表下来、或上一档那一页没建过）
 	 */
-	private Page adoptPreviousBandPage(int layer, int pageX, int pageZ) {
+	private TilePage adoptPreviousBandPage(int layer, int pageX, int pageZ) {
 		// 只在"洞穴档 → 洞穴档"之间改挂。
 		//  · 上一档是地表（或还没定过）：洞穴要从未探明（黑）开始，绝不能沿用地面那套像素
 		//    ——否则下到洞里看到的还是刚才那张地表图。
@@ -494,7 +272,7 @@ public final class WorldTilePages implements Closeable {
 			return null;
 		}
 		long previousKey = key(previousLayer, 0, pageX, pageZ);
-		Page page = resident.remove(previousKey);
+		TilePage page = resident.remove(previousKey);
 		boolean fromCold = false;
 		if (page == null) {
 			page = cold.remove(previousKey);
@@ -533,7 +311,7 @@ public final class WorldTilePages implements Closeable {
 	 * 里几十上百块同时闪黑；拨回游标更糟——游标从 0 重走会一路跳过已填块、每帧推进 {@code ASK_LIMIT} 步，
 	 * 只有散落的失效块在"乱点"，就是撕裂。
 	 */
-	private void refreshCaveHeight(Page page, int layer) {
+	private void refreshCaveHeight(TilePage page, int layer) {
 		// 只有洞穴层有"档内高度变化"这件事；地表页的 pixelHeight 恒等于它自己的键层
 		if (!LayerSelector.isCave(layer) || page.pixelHeight() == layer) {
 			return;
@@ -568,8 +346,8 @@ public final class WorldTilePages implements Closeable {
 	}
 
 	/** 取一页，没有就返回 null（不新建）。绘制时用，免得为了画一张空页建出一堆贴图。 */
-	public Page find(int layer, int pageX, int pageZ) {
-		Page page = resident.get(key(layer, 0, pageX, pageZ));
+	public TilePage find(int layer, int pageX, int pageZ) {
+		TilePage page = resident.get(key(layer, 0, pageX, pageZ));
 		if (page != null) {
 			// 绘制走这条：视野里若有一页没被 fillView 的 page() 校准过（不在填充顺序里），
 			// 也要在这里按当前精确高度校准一次，否则会照上一格的高度画（见 refreshCaveHeight）。
@@ -582,7 +360,7 @@ public final class WorldTilePages implements Closeable {
 	 * 页键用的层号：洞穴按<b>归档层</b>量化（{@link LayerSelector#CAVE_STEP} 格一档），
 	 * 地表用 {@link Short#MIN_VALUE} 这个不会与真实层高相撞的哨兵。
 	 *
-	 * <p><b>精确显示高度刻意不进位置。</b>它只当页的<b>内容</b>（见 {@link Page#pixelHeight}）：洞里上下
+	 * <p><b>精确显示高度刻意不进位置。</b>它只当页的<b>内容</b>（见 {@link TilePage#pixelHeight}）：洞里上下
 	 * 1 格都会变高度，拿它当页身份就会每格换一套页键（建页、改挂、搬走旧页），看起来就是"下潜一格整屏
 	 * 重新加载一遍"；量化到归档层后，档内高度变化只是同一页就地校准（见 {@link #refreshCaveHeight}）。
 	 *
@@ -636,8 +414,8 @@ public final class WorldTilePages implements Closeable {
 	 * <p>页内<b>按固定顺序（列优先）推进</b>（见 {@link #SWEEP_ORDER}），不看朝向；"离玩家由近到远"是
 	 * <b>页与页之间</b>的事。
 	 *
-	 * <p>两段：先<b>补画</b>上次问过还没画上的（{@link Page#pending}），轮转着找，队首没到也不挡后面；
-	 * 再<b>往下问新的</b>，遇到"还没定论"的记进 {@link Page#pending} 继续走——<b>不能停在这一块上</b>，
+	 * <p>两段：先<b>补画</b>上次问过还没画上的（{@link TilePage#pending}），轮转着找，队首没到也不挡后面；
+	 * 再<b>往下问新的</b>，遇到"还没定论"的记进 {@link TilePage#pending} 继续走——<b>不能停在这一块上</b>，
 	 * 一停整页就变成"一块块串行等磁盘"，一页要几十秒。
 	 *
 	 * <p>本页预算（{@code limit}）、全局预算（{@link ClientChunkColorProvider#isWarmSpent()}）与
@@ -645,7 +423,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * @return 这一轮有没有<b>进展</b>（画上了几块、或游标前进了）；调用方据此决定"还要不要喂下一页"。
 	 */
-	public boolean fillSome(Page page, int limit) {
+	public boolean fillSome(TilePage page, int limit) {
 		// 【诊断计量】只在本方法这一层取一次时间；写入块数用 framePaints 的增量算（只有本方法里的
 		// fillOne 会动它，所以这一段的增量就是本方法写下的块数）。
 		long statT0 = ClientChunkColorProvider.STATS_ENABLED ? System.nanoTime() : 0L;
@@ -715,36 +493,12 @@ public final class WorldTilePages implements Closeable {
 	private static final int PAINT_PROBES = 256;
 
 	/**
-	 * 页内填充顺序：<b>从页中心一圈圈向外</b>（切比雪夫距离相同的算同一圈）。
+	 * 页内推进顺序表（问新块、补画、未探明重试共用同一张）。
 	 *
-	 * <p>块索引本身仍是 {@code z * PAGE_CHUNKS + x}（写入、待办、重试都按它算），这张表只决定"先问哪一块"。
-	 *
-	 * <p><b>为什么不再是"一列一列"。</b>按列推进时，一块正在长的页看起来是一条条<b>竖带</b>从上往下
-	 * 拉出来，"多列加载"就是这么来的（用户反馈）。改成同心圈之后，页是从中间一小块开始、四周一圈圈
-	 * 铺开——页与页之间本来就是"离玩家由近到远"，两下一叠，观感就是地图从玩家附近均匀地长出来。
-	 *
-	 * <p><b>刻意不做"跟着朝向走"</b>：试过把条带做成垂直于视线，斜着走时地图上真的出现一条条<b>斜着</b>
-	 * 长出来的带子、一转头方向还会跳。
+	 * <p>走向与"为什么不跟着朝向走"都写在 {@link TileSweepOrder#pageCenterOut} 那里——
+	 * 全工程的页内推进顺序只此一处，别再各写一套。
 	 */
-	private static final int[] SWEEP_ORDER = buildCenterOut();
-
-	/** 生成上面那张表：按"到页中心的切比雪夫距离"分圈，圈内再按 {@code z*32+x} 的顺序排。 */
-	private static int[] buildCenterOut() {
-		int[] order = new int[PAGE_CHUNK_COUNT];
-		int center = PAGE_CHUNKS / 2;
-		int at = 0;
-		for (int ring = 0; at < PAGE_CHUNK_COUNT; ring++) {
-			for (int z = 0; z < PAGE_CHUNKS; z++) {
-				for (int x = 0; x < PAGE_CHUNKS; x++) {
-					if (Math.max(Math.abs(x - center), Math.abs(z - center)) != ring) {
-						continue;
-					}
-					order[at++] = z * PAGE_CHUNKS + x;
-				}
-			}
-		}
-		return order;
-	}
+	private static final int[] SWEEP_ORDER = TileSweepOrder.pageCenterOut(PAGE_CHUNKS);
 
 	/**
 	 * 一次访问里，最多往下问几块新的。
@@ -767,19 +521,19 @@ public final class WorldTilePages implements Closeable {
 	 * <p><b>这只是"进度"那一半</b>；另一半是"这一片到底有没有数据"（见 {@link #hasRealTerrain} 与
 	 * {@code WorldMapScreen#couldStillHaveData}）。只看进度会让外周<b>根本没有存档数据</b>的页也一直转圈。
 	 */
-	public boolean awaitingData(Page page) {
+	public boolean awaitingData(TilePage page) {
 		// "还没轮到的页"不算。只有"已经开过工、这一遍还没走完"的页才转圈——
 		// 排队等开工的页（同时填的页数有上限）游标还是 0，把它们也算进来圈就永远转个不停。
 		return started(page) && page.fillCursor < PAGE_CHUNK_COUNT;
 	}
 
 	/**
-	 * 这一页有没有<b>真的画出过一块地形</b>（见 {@link Page#everTerrain}）。
+	 * 这一页有没有<b>真的画出过一块地形</b>（见 {@link TilePage#everTerrain}）。
 	 *
 	 * <p>给加载指示用：它和 {@link #awaitingData} 是同一判据的两半。一页只要出过地形，就说明"这一片
 	 * 确实有数据"，之后即使还有块在等也值得继续转圈。
 	 */
-	public boolean hasRealTerrain(Page page) {
+	public boolean hasRealTerrain(TilePage page) {
 		return page.everTerrain;
 	}
 
@@ -792,7 +546,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * @return false = 这一轮还问不出结果（预算用尽、或数据正在来的路上），调用方应留着下次再问
 	 */
-	private boolean fillOne(Page page, int index) {
+	private boolean fillOne(TilePage page, int index) {
 		if (colors.isWarmSpent()) {
 			return false;
 		}
@@ -923,7 +677,7 @@ public final class WorldTilePages implements Closeable {
 	}
 
 	/** 这一页是不是已经开过工（问过至少一块）。见 {@code WorldMapScreen} 里"同时在填的页数"封顶。 */
-	public boolean started(Page page) {
+	public boolean started(TilePage page) {
 		return page.fillCursor > 0 || page.pendingCount > 0;
 	}
 
@@ -933,16 +687,16 @@ public final class WorldTilePages implements Closeable {
 	 * <p>屏幕同时摊开太多半成品页就是"到处都在长、又都长不完"，界面据此给"同时在填的页数"封顶。
 	 *
 	 * <p><b>必须只数当前层。</b>换层时上一层的页原地留着，但它们里面"问过、数据还没到"的块
-	 * （{@link Page#pendingCount}）要等切回去才会被消化；填这一层的顺序又用当前层，上一层根本不会被再喂，
+	 * （{@link TilePage#pendingCount}）要等切回去才会被消化；填这一层的顺序又用当前层，上一层根本不会被再喂，
 	 * 于是它们的"还有活"状态<b>永久</b>占着名额——攒够上限后新一层就再也开不了工（"换层后一直加载上一层
 	 * 的瓦片"）。按层过滤后名额只算当前层，换层立刻从当前层重新铺。
 	 */
 	public int fillingCount(int layer) {
 		int keyed = keyLayer(layer);
 		int count = 0;
-		for (Page page : resident.values()) {
+		for (TilePage page : resident.values()) {
 			// 只算当前层：上一层的页留在常驻集合里，但不该占这一层的开工名额（见上面的说明）。
-			// 比的是归档层——页上存的就是它（见 Page#layer）
+			// 比的是归档层——页上存的就是它（见 TilePage#layer）
 			if (page.layer != keyed) {
 				continue;
 			}
@@ -958,11 +712,11 @@ public final class WorldTilePages implements Closeable {
 	/**
 	 * 这一页还有没有活要干（整屏填充顺序由调用方按"离玩家由近到远"重排，见 {@link #fillSome}）。
 	 *
-	 * <p><b>两个条件缺一不可</b>：游标没走完，<b>或者</b>还有在等数据的块（{@link Page#pendingCount}）。
+	 * <p><b>两个条件缺一不可</b>：游标没走完，<b>或者</b>还有在等数据的块（{@link TilePage#pendingCount}）。
 	 * 只看游标会<b>死住</b>：游标把剩下的块全标成"待问"后走到底，那几百块没画上，而调用方见
 	 * {@code hasWork} 为假就再也不来访问。
 	 */
-	public boolean hasWork(Page page) {
+	public boolean hasWork(TilePage page) {
 		return page.fillCursor < PAGE_CHUNK_COUNT || page.pendingCount > 0;
 	}
 
@@ -973,12 +727,12 @@ public final class WorldTilePages implements Closeable {
 	 * 与 {@link #fillSome} 共用同一批像素与同一张 {@code filled} 表，世界地图之后补整页时会跳过这些块。
 	 *
 	 * @return 这一块所在的页；这一轮没画上（预算用尽 / 数据在路上）也返回它，但那一格<b>什么都不写</b>
-	 *         （保持透明），并标进 {@link Page#pending} 等下次再补
+	 *         （保持透明），并标进 {@link TilePage#pending} 等下次再补
 	 */
-	public Page fillChunkNow(int layer, int chunkX, int chunkZ) {
+	public TilePage fillChunkNow(int layer, int chunkX, int chunkZ) {
 		int pageX = Math.floorDiv(chunkX, PAGE_CHUNKS);
 		int pageZ = Math.floorDiv(chunkZ, PAGE_CHUNKS);
-		Page page = page(layer, pageX, pageZ);
+		TilePage page = page(layer, pageX, pageZ);
 		int index = Math.floorMod(chunkZ, PAGE_CHUNKS) * PAGE_CHUNKS + Math.floorMod(chunkX, PAGE_CHUNKS);
 		if (page.filled[index]) {
 			return page;
@@ -997,7 +751,7 @@ public final class WorldTilePages implements Closeable {
 	 * <p>夜晚那张涂<b>全透明</b>而不是同一个半透明黑：未探明色本身就带一半透明要把底色透出来，两张各叠
 	 * 一次的话天越黑它越暗（午夜只剩四分之一）。涂全透明后那一块由白天那张单独负责，天色不影响它。
 	 */
-	private static void paintChunkSolid(Page page, int index) {
+	private static void paintChunkSolid(TilePage page, int index) {
 		int baseX = index % PAGE_CHUNKS * CHUNK_SIZE;
 		int baseY = index / PAGE_CHUNKS * CHUNK_SIZE;
 		page.textures().day().getPixels().fillRect(baseX, baseY, CHUNK_SIZE, CHUNK_SIZE, UNEXPLORED);
@@ -1037,7 +791,7 @@ public final class WorldTilePages implements Closeable {
 		int pageX = Math.floorDiv(chunkX, PAGE_CHUNKS);
 		int pageZ = Math.floorDiv(chunkZ, PAGE_CHUNKS);
 		long key = key(layer, 0, pageX, pageZ);
-		Page page = resident.get(key);
+		TilePage page = resident.get(key);
 		if (page == null) {
 			page = cold.get(key);
 		}
@@ -1070,7 +824,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * @return 有没有真的传过东西
 	 */
-	public boolean upload(Page page, boolean wantDay, boolean wantNight) {
+	public boolean upload(TilePage page, boolean wantDay, boolean wantNight) {
 		if (!settled(page)) {
 			return false;
 		}
@@ -1094,7 +848,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * <p>后半条是兜底：万一某一块的请求卡住很久，也不能让已经画好的那部分一直不上屏。
 	 */
-	private static boolean settled(Page page) {
+	private static boolean settled(TilePage page) {
 		return page.pendingCount == 0
 				|| System.nanoTime() - page.paintedAtNanos >= UPLOAD_SETTLE_NANOS;
 	}
@@ -1145,11 +899,11 @@ public final class WorldTilePages implements Closeable {
 
 	/** 换世界就把瓦片全部丢掉（连堆里留的像素一起），免得画出一堆别的存档的地形。 */
 	public void reset() {
-		for (Page page : resident.values()) {
+		for (TilePage page : resident.values()) {
 			page.textures().close();
 		}
 		resident.clear();
-		for (Page page : cold.values()) {
+		for (TilePage page : cold.values()) {
 			page.textures().close();
 		}
 		cold.clear();
@@ -1175,7 +929,7 @@ public final class WorldTilePages implements Closeable {
 	 * <p><b>全屏地图不做逐块淡入。</b>未探明像素现在是全透明的，整页压 alpha 就等于让地形一起变淡、压在
 	 * 深色底色上（加载区域四周会出现一圈发暗的块）。只有小地图仍有淡入：它每帧重新合成，顺手加不透明度即可。
 	 */
-	private void writeChunk(Page page, int index, boolean hasData) {
+	private void writeChunk(TilePage page, int index, boolean hasData) {
 		int baseX = index % PAGE_CHUNKS * CHUNK_SIZE;
 		int baseY = index / PAGE_CHUNKS * CHUNK_SIZE;
 		page.loaded = true;
@@ -1216,10 +970,10 @@ public final class WorldTilePages implements Closeable {
 	 * {@link #cold}，回来时只重传一次。
 	 */
 	private void evictOverflow() {
-		Iterator<Map.Entry<Long, Page>> iterator = resident.entrySet().iterator();
+		Iterator<Map.Entry<Long, TilePage>> iterator = resident.entrySet().iterator();
 		while (resident.size() > capacity && iterator.hasNext()) {
-			Map.Entry<Long, Page> entry = iterator.next();
-			Page page = entry.getValue();
+			Map.Entry<Long, TilePage> entry = iterator.next();
+			TilePage page = entry.getValue();
 			if (isProtected(page)) {
 				continue;
 			}
@@ -1272,7 +1026,7 @@ public final class WorldTilePages implements Closeable {
 	}
 
 	/** 这一页在不在"不许被淘汰"的范围内（叶页判据；粗页那一边由 {@link CoarseTileCache} 自己问）。 */
-	private boolean isProtected(Page page) {
+	private boolean isProtected(TilePage page) {
 		return protection.containsLeaf(page.layer(), page.pageX, page.pageZ);
 	}
 
@@ -1309,7 +1063,7 @@ public final class WorldTilePages implements Closeable {
 	 * {@value #RETRY_SLICE} 块。
 	 *
 	 * <p><b>直接在这儿补，不动填充游标</b>：游标一归零那一页就变成"还有活要干"、界面立刻给它转圈。
-	 * 判定用 {@link Page#hasTerrain} 而不读贴图像素——一整块里只要有一列没数据，角落像素就是透明的，
+	 * 判定用 {@link TilePage#hasTerrain} 而不读贴图像素——一整块里只要有一列没数据，角落像素就是透明的，
 	 * 按像素判断会把好页反复挑出来重填。
 	 */
 	public void retryUnexplored(long now) {
@@ -1328,14 +1082,14 @@ public final class WorldTilePages implements Closeable {
 			playerPageX = Math.floorDiv(Minecraft.getInstance().player.getBlockX() >> 4, PAGE_CHUNKS);
 			playerPageZ = Math.floorDiv(Minecraft.getInstance().player.getBlockZ() >> 4, PAGE_CHUNKS);
 		}
-		java.util.List<Page> ordered = new java.util.ArrayList<>(resident.values());
+		java.util.List<TilePage> ordered = new java.util.ArrayList<>(resident.values());
 		final int centerX = playerPageX;
 		final int centerZ = playerPageZ;
 		if (centerX != Integer.MIN_VALUE) {
 			ordered.sort(java.util.Comparator.comparingInt(
 					page -> Math.max(Math.abs(page.pageX - centerX), Math.abs(page.pageZ - centerZ))));
 		}
-		for (Page page : ordered) {
+		for (TilePage page : ordered) {
 			for (int step = 0; step < RETRY_SLICE; step++) {
 				// 补画也走同一张固定表（见 SWEEP_ORDER），
 				// 不然补上的那几块会以另一种顺序出现，与填充的走向混在一起
@@ -1487,9 +1241,9 @@ public final class WorldTilePages implements Closeable {
 	 * <p><b>只从叶页降采样</b>（2 档取 2×2、4 档取 4×4 个叶像素），不从 2 档那一页再降一层：2 档页只在
 	 * 中等缩放下才建，而"叶页一变就作废粗页"这条失效链（见 {@link CoarseTileCache#markDirty}）只覆盖叶页。
 	 */
-	private Page finePage(int layer, int pageX, int pageZ) {
+	private TilePage finePage(int layer, int pageX, int pageZ) {
 		long key = key(layer, 0, pageX, pageZ);
-		Page page = resident.get(key);
+		TilePage page = resident.get(key);
 		if (page == null) {
 			page = cold.get(key);
 			if (page == null) {

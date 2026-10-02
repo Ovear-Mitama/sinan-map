@@ -65,6 +65,7 @@ import sinanmap.client.map.data.ClientChunkColorProvider;
 import sinanmap.client.map.data.MapStorage;
 import sinanmap.client.map.data.WorldSaveChunks;
 import sinanmap.client.map.render.MarkerRenderer;
+import sinanmap.client.map.render.TilePage;
 import sinanmap.client.map.render.TileVariants;
 import sinanmap.client.map.render.WorldTilePages;
 import sinanmap.client.map.settings.MapSettingsScreen;
@@ -913,7 +914,7 @@ public final class WorldMapScreen extends Screen {
 		int pending = 0;
 		for (int pageZ = viewMinZ; pageZ <= viewMaxZ; pageZ++) {
 			for (int pageX = viewMinX; pageX <= viewMaxX; pageX++) {
-				WorldTilePages.Page page = tiles.find(currentLayer, pageX, pageZ);
+				TilePage page = tiles.find(currentLayer, pageX, pageZ);
 				if (page != null) {
 					pending += page.pendingCount();
 				}
@@ -2353,7 +2354,7 @@ public final class WorldMapScreen extends Screen {
 				continue;
 			}
 			long p0 = System.nanoTime();
-			WorldTilePages.Page page = tiles.page(currentLayer, pageX, pageZ);
+			TilePage page = tiles.page(currentLayer, pageX, pageZ);
 			long p1 = System.nanoTime();
 			// 粗页模式下这一句被 coarse 挡住（不再推进叶页游标，免得两套顺序叠在同帧"哪儿都在长"）；
 			// 页本身仍照建、照上传，缩回中等倍率时立刻能用。
@@ -2481,7 +2482,7 @@ public final class WorldMapScreen extends Screen {
 						return true;
 					}
 				} else {
-					WorldTilePages.Page page = tiles.find(currentLayer, pageX, pageZ);
+					TilePage page = tiles.find(currentLayer, pageX, pageZ);
 					if (page != null && tiles.hasWork(page)) {
 						return true;
 					}
@@ -2718,7 +2719,7 @@ public final class WorldMapScreen extends Screen {
 		int pending = 0;
 		for (int pageZ = viewMinZ; pageZ <= viewMaxZ; pageZ++) {
 			for (int pageX = viewMinX; pageX <= viewMaxX; pageX++) {
-				WorldTilePages.Page page = tiles.find(currentLayer, pageX, pageZ);
+				TilePage page = tiles.find(currentLayer, pageX, pageZ);
 				if (page == null) {
 					continue;
 				}
@@ -2736,7 +2737,7 @@ public final class WorldMapScreen extends Screen {
 		int pendingInFillOrder = 0;
 		if (fillOrder != null) {
 			for (long cell : fillOrder) {
-				WorldTilePages.Page page = tiles.find(currentLayer, (int) (cell >> 32), (int) cell);
+				TilePage page = tiles.find(currentLayer, (int) (cell >> 32), (int) cell);
 				if (page != null) {
 					pendingInFillOrder += page.pendingCount();
 				}
@@ -2887,7 +2888,7 @@ public final class WorldMapScreen extends Screen {
 
 	/**
 	 * 填充顺序：<b>页与页之间按离玩家的距离由近到远</b>，页内部固定列优先
-	 * （见 {@link WorldTilePages.Page#fillCursor}）。度量用页索引的切比雪夫距离一圈圈向外，省掉每帧排序。
+	 * （见 {@link TilePage#fillCursor}）。度量用页索引的切比雪夫距离一圈圈向外，省掉每帧排序。
 	 *
 	 * <p><b>刻意不做"朝向优先"</b>：试过把螺旋中心往面朝方向挪几页，结果斜着走时整张图跟着歪、一转头
 	 * 方向就跳。"前面先出来"由"离玩家近的先出来"自然带来，不必按朝向另做一套。
@@ -3080,7 +3081,7 @@ public final class WorldMapScreen extends Screen {
 				// z0 与这一行的 pageX 无关，提到内层循环外
 				int z0 = (pageZ - viewMinZ) * size;
 				for (int pageX = viewMinX; pageX <= viewMaxX; pageX++) {
-					WorldTilePages.Page page = tiles.find(currentLayer, pageX, pageZ);
+					TilePage page = tiles.find(currentLayer, pageX, pageZ);
 					if (page == null || !page.loaded()) {
 						continue;
 					}
@@ -3127,7 +3128,7 @@ public final class WorldMapScreen extends Screen {
 				if (pageX < viewMinX || pageX > viewMaxX || pageZ < viewMinZ || pageZ > viewMaxZ) {
 					continue;
 				}
-				WorldTilePages.Page page = tiles.find(currentLayer, pageX, pageZ);
+				TilePage page = tiles.find(currentLayer, pageX, pageZ);
 				// 先过"便宜"的进度判据，再问"这一片有没有数据"（后者要查玩家距离 / 区域文件）
 				if (page == null || !tiles.awaitingData(page)
 						|| !couldStillHaveData(tiles.hasRealTerrain(page), pageX, pageZ)) {
@@ -3234,7 +3235,7 @@ public final class WorldMapScreen extends Screen {
 	private static final long PAGE_FADE_NANOS = 420_000_000L;
 
 	/** 一页的淡入进度（0~1，带缓入缓出）。 */
-	private static float pageFade(WorldTilePages.Page page, long now) {
+	private static float pageFade(TilePage page, long now) {
 		long start = page.loadedAtNanos();
 		if (start == 0L) {
 			// 不淡入：老页、以及被淘汰后重新填回来的页，直接画出来
