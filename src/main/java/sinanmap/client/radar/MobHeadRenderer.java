@@ -131,8 +131,9 @@ import sinanmap.common.SinanConstants;
  * {@code RenderSystem.queueFencedTask} 排队、在 {@code runTick} 的 {@code executePendingTasks()} 里兑现，
  * 所以从"排队"到"拿到像素"会隔一两帧；{@link MobHeads.Resolution#PENDING} 就是这个中间态，调用方<b>不要缓存</b>。
  *
- * <p><b>取舍</b>：<b>全场一个离屏目标、缓冲全部复用</b>（{@link #target} 只建一次，带深度，不按类型建，
- * 显存有界）；<b>带时间预算的懒预渲染队列</b>（每帧最多 {@value #MAX_JOBS_PER_FRAME} 个变种，单次抽取不超过
+ * <p><b>取舍</b>：<b>每个变种独占一张离屏目标</b>（见 {@link Job#offscreen}——画完就回读、像素到手即销毁，
+ * "写"与"读"永不指向同一张纹理）；<b>其余资源全部复用</b>（顶点缓冲、批次、投影缓冲、灯光）；
+ * <b>带时间预算的懒预渲染队列</b>（每帧最多 {@value #MAX_JOBS_PER_FRAME} 个变种，单次抽取不超过
  * {@link #FRAME_BUDGET_NANOS}，两次至少隔 {@link #MIN_PUMP_INTERVAL_NANOS}，只有真正出现在雷达里的变种才进队）；
  * <b>"未就绪"不缓存</b>（否则会"先把退化结果缓存下来、之后永远画退化结果"）；<b>画不出来就交给退化链</b>
  * （失败判成 FAILED，由上层退化成刷怪蛋 → 菱形标记）；<b>不用 Mixin、不用反射</b>。
@@ -490,6 +491,16 @@ final class MobHeadRenderer {
 		private MobHeads.Resolution result;
 		/** 已经发起回读的时刻（没发起过就是 0），用来兜住"回读迟迟不回来"。 */
 		private long readbackIssuedNanos;
+		/**
+		 * 本次渲染用的离屏目标，<b>每个变种新开一张</b>：回读落地后在 {@link #complete} 里销毁，
+		 * 中途判失败就在 {@link #render} 的 finally 里销毁。
+		 *
+		 * <p><b>为什么不共用一张画布</b>：一张画布只要同时扮演"这一帧要画的"和"上一次回读正在拷贝的
+		 * 源"，拷贝就可能读到被改写的内容，图标里混进上一张的残影（表现为偶发杂色，还会被"跨世界永久
+		 * 缓存"固化）。分开之后写与读指向不同的纹理，这类污染在物理上不可能发生。每个变种的样子只做
+		 * 一次，稳态下不占显存。
+		 */
+		private TextureTarget offscreen;
 
 		private Job(EntityType<?> type, MobHeadKey key, EntityRenderer<?, ?> renderer, Model<?> model,
 				EntityRenderState state, boolean wholeEntity) {
@@ -515,16 +526,8 @@ final class MobHeadRenderer {
 	private static boolean disabled;
 	private static boolean warnedFailure;
 
-	/**
-	 * 离屏目标：<b>两张轮换</b>（懒建，尺寸固定，不随变种数增长）。必须两张：画布<b>既是这一帧要画的
-	 * 画布、又是上一次回读正在拷贝的源</b>，而一次回读可能跨一两帧才落地，画进同一张就会让拷贝读到被改写
-	 * 的内容（图标混进两次的内容）。轮换后这一帧画 A、上一帧的拷贝在读 B，互不影响。
-	 */
-	private static TextureTarget targetA;
-	private static TextureTarget targetB;
-
-	/** 这一帧画进哪一张（{@link #draw} 开头轮换）。 */
-	private static TextureTarget target;
+	/** 一次性资源（投影、缓冲、批次、灯光）是否已建，见 {@link #ensureResources}。 */
+	private static boolean ready;
 	private static Projection projection;
 	private static ProjectionMatrixBuffer projectionBuffer;
 
@@ -629,6 +632,8 @@ final class MobHeadRenderer {
 		if (job.readbackIssuedNanos != 0L
 				&& System.nanoTime() - job.readbackIssuedNanos > READBACK_TIMEOUT_NANOS) {
 			job.state$ = State.FAILED;
+			// 回调多半不会再来了，离屏目标在这里收掉，不能等 complete
+			destroyOffscreen(job);
 			return false;
 		}
 		return true;
@@ -675,15 +680,9 @@ final class MobHeadRenderer {
 		if (disabled || queueHead >= QUEUE.size() || !RenderSystem.isOnRenderThread()) {
 			return;
 		}
-		// 上一张画布的回读还在飞时，一个字都不能往画布上画：画布既是这一帧要画的画布、又是上一次回读
-		// 正在拷贝的源，回读没落地就往上画会让拷贝读到被改写的内容（图标混进两次内容，不止当次类型）。
-		// 留一两帧没代价：头像本来就是异步出来的（{@code readbackBusy} 在回读完成时清掉）。
-		if (readbackBusy) {
-			if (System.nanoTime() - readbackBusySince <= READBACK_TIMEOUT_NANOS) {
-				return; // 正常情况：等下一帧
-			}
-			// 兜底：回读迟迟不落地就放弃这只缓冲，否则会永远卡在"等回读"上；丢掉引用而不 close，
-			// 回调可能还会碰它。
+		// 回读迟迟不落地（正常一两帧就兑现）就放弃那只共享缓冲，否则它会一直被占着、之后每个变种都得
+		// 临时新开一只。丢掉引用而不 close：回调可能还会碰它。
+		if (readbackBusy && System.nanoTime() - readbackBusySince > READBACK_TIMEOUT_NANOS) {
 			readbackBusy = false;
 			readbackBuffer = null;
 		}
@@ -710,6 +709,8 @@ final class MobHeadRenderer {
 	/** 渲染一个任务；任何异常都把它判成"确定失败"（终态），由上层的退化链接手。 */
 	private static void render(Job job) {
 		try {
+			// 每个变种一张全新的离屏目标，见 Job#offscreen
+			job.offscreen = new TextureTarget("sinanmap mob head", CANVAS, CANVAS, true);
 			draw(job);
 		} catch (RuntimeException e) {
 			job.state$ = State.FAILED;
@@ -720,6 +721,18 @@ final class MobHeadRenderer {
 		} finally {
 			// 无论成败都把共享模型复位（正常路径下面已经配平，这里兜住异常路径）
 			job.model.resetPose();
+			// 没把回读交出去（中途判失败、或上面抛了异常）就地销毁；交出去的由 complete 负责
+			if (job.state$ != State.PENDING) {
+				destroyOffscreen(job);
+			}
+		}
+	}
+
+	/** 销毁这个任务的离屏目标；已经销毁过（回读回调先到）就什么都不做。 */
+	private static void destroyOffscreen(Job job) {
+		if (job.offscreen != null) {
+			job.offscreen.destroyBuffers();
+			job.offscreen = null;
 		}
 	}
 
@@ -731,8 +744,9 @@ final class MobHeadRenderer {
 	private static void draw(Job job) {
 		Model<?> model = job.model;
 
-		// 0) 先轮换离屏目标：上一帧发起的那次回读正在读另一张，这一帧绝不碰它（见 targetA/targetB）。
-		target = target == targetA ? targetB : targetA;
+		// 0) 本变种独占的离屏目标（由 render() 新建，见 Job#offscreen）。整个方法只碰这一张，
+		//    所以"这里在写"和别处"回读在读"不可能落在同一张纹理上。
+		TextureTarget target = job.offscreen;
 
 		// 1) 姿势：先回设计默认值（清掉上一次世界渲染的残留），再按归零过的状态摆一次。
 		//    原版只在"该生物有渲染层"时才 setupAnim，所以这里必须自己补上。
@@ -1047,6 +1061,8 @@ final class MobHeadRenderer {
 			}
 		} finally {
 			releaseReadbackBuffer(buffer);
+			// 像素已经搬到 CPU 侧成图，这张离屏目标完成了使命（见 Job#offscreen）
+			destroyOffscreen(job);
 		}
 	}
 
@@ -1324,21 +1340,19 @@ final class MobHeadRenderer {
 		return parent != null && parent.hasChild(name) ? parent.getChild(name) : null;
 	}
 
-	/** 懒建所有一次性资源（只在渲染线程；{@code TextureTarget} 的构造本身会断言渲染线程）。 */
+	/** 懒建所有一次性资源（只在渲染线程）。离屏目标不在这里——每个变种一张，见 {@link Job#offscreen}。 */
 	private static void ensureResources() {
-		if (target != null) {
+		if (ready) {
 			return;
 		}
-		// 两张轮换，见 targetA/targetB 的说明
-		targetA = new TextureTarget("sinanmap mob head A", CANVAS, CANVAS, true);
-		targetB = new TextureTarget("sinanmap mob head B", CANVAS, CANVAS, true);
-		target = targetA;
 		projection = new Projection();
 		projectionBuffer = new ProjectionMatrixBuffer("sinanmap mob heads");
 		vertexBuffers = new ByteBufferBuilder(VERTEX_BUFFER_BYTES);
 		batches = MultiBufferSource.immediate(vertexBuffers);
 		poseStack = new PoseStack();
 		buildHeadLights();
+		// 全部建好再置位：中途抛异常时 request() 会把这条路 disable 掉，不会再来第二次
+		ready = true;
 	}
 
 	/**
