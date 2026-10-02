@@ -8,10 +8,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import com.mojang.blaze3d.platform.NativeImage;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
-import com.mojang.blaze3d.textures.GpuSampler;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -155,8 +151,6 @@ public final class WorldTilePages implements Closeable {
 	private final int[] dayPixels = new int[CHUNK_SIZE * CHUNK_SIZE];
 	private final int[] nightPixels = new int[CHUNK_SIZE * CHUNK_SIZE];
 
-	private int tileSerial;
-
 	/**
 	 * 上一次见到的世界。
 	 *
@@ -187,47 +181,13 @@ public final class WorldTilePages implements Closeable {
 		return shared;
 	}
 
-	/**
-	 * 一页的贴图与它们在贴图管理器里的名字。
-	 *
-	 * <p>要名字是因为 26.1 里能带颜色的 {@code blit} 只接受 {@link Identifier}，而接受
-	 * {@code GpuTextureView} 的那条没有颜色参数；要按天色给夜晚那张压 alpha，只能把贴图挂到贴图管理器上
-	 * 用名字去画（见 {@link #register}）。
-	 *
-	 * <p><b>每张图两个名字</b>：{@code dayId}/{@code nightId} 线性（小地图用，连续滑动，最近邻会跳），
-	 * {@code daySharpId}/{@code nightSharpId} 最近邻（全屏地图用，线性会糊）。两个名字指向同一份显存，
-	 * 见 {@link ResampledTexture}。
-	 */
-	public record Variants(SmoothedDynamicTexture day, Identifier dayId,
-			SmoothedDynamicTexture night, Identifier nightId,
-			ResampledTexture daySharp, Identifier daySharpId,
-			ResampledTexture nightSharp, Identifier nightSharpId) {
-
-		/** 只回收显存，像素留着，见 {@link SmoothedDynamicTexture#releaseGpu()}。 */
-		void releaseGpu() {
-			day.releaseGpu();
-			night.releaseGpu();
-		}
-
-		/** 把显存要回来并把像素传上去，见 {@link SmoothedDynamicTexture#reacquireGpu()}。 */
-		void reacquireGpu() {
-			day.reacquireGpu();
-			night.reacquireGpu();
-		}
-
-		/** 连像素一起释放。两个"锐"的名字只是换采样器，各关掉自己那份 1×1 占位即可。 */
-		void close() {
-			day.close();
-			night.close();
-			daySharp.close();
-			nightSharp.close();
-		}
-	}
+	/** 一页的贴图从哪来、什么时候能丢，见 {@link TileTexturePool}（含"每张图四个名字"的细节）。 */
+	private final TileTexturePool texturePool = new TileTexturePool();
 
 	/** 一页瓦片：白天与夜晚各一张贴图，绘制时按当前天色混合。 */
 	public static final class Page {
 
-		private final Variants textures;
+		private final TileVariants textures;
 
 		/**
 		 * 这一页挂在哪一层的键上，即<b>归档层</b>（见 {@link #keyLayer}；地表是哨兵）。
@@ -368,7 +328,7 @@ public final class WorldTilePages implements Closeable {
 		/** 上一次往这一页写像素的时刻：页还在陆续来数据时先不上传，靠它判断"静下来了没有"。 */
 		private long paintedAtNanos;
 
-		private Page(Variants textures, int layer, int pixelHeight, int pageX, int pageZ) {
+		private Page(TileVariants textures, int layer, int pixelHeight, int pageX, int pageZ) {
 			this.textures = textures;
 			this.layer = layer;
 			this.pixelHeight = pixelHeight;
@@ -376,7 +336,7 @@ public final class WorldTilePages implements Closeable {
 			this.pageZ = pageZ;
 		}
 
-		public Variants textures() {
+		public TileVariants textures() {
 			return textures;
 		}
 
@@ -430,7 +390,7 @@ public final class WorldTilePages implements Closeable {
 			dirtyNight = false;
 		}
 
-		/** 只回收显存，像素留着，见 {@link Variants#releaseGpu()}。 */
+		/** 只回收显存，像素留着，见 {@link TileVariants#releaseGpu()}。 */
 		private void releaseGpu() {
 			textures.releaseGpu();
 		}
@@ -460,7 +420,8 @@ public final class WorldTilePages implements Closeable {
 		}
 		// 换归档档：把上一档的同一页整页拿过来继续用（连像素一起），只作废结果真的变了的区块
 		Page adopted = adoptPreviousBandPage(layer, pageX, pageZ);
-		Page created = adopted != null ? adopted : new Page(obtain(PAGE_BLOCKS), keyLayer(layer), layer, pageX, pageZ);
+		Page created = adopted != null ? adopted
+				: new Page(texturePool.obtain(PAGE_BLOCKS), keyLayer(layer), layer, pageX, pageZ);
 		if (adopted != null) {
 			// 改挂过来的像素还是按"上一格那个高度"画的，紧接着按当前高度校准一次（见 refreshCaveHeight）
 			refreshCaveHeight(created, layer);
@@ -858,34 +819,9 @@ public final class WorldTilePages implements Closeable {
 	/** 诊断：本帧"还没有定论"的块数（数据在路上 / 请求没排上 / 还没生成完）。 */
 	private int frameNotDecided;
 
-	/**
-	 * 等着关掉的贴图：<b>推迟到下一帧再关</b>。
-	 *
-	 * <p>不能当场关：这一帧的"填充"与"绘制"是两步，贴图可能在第一步被淘汰、下一步仍被画——按名字画
-	 * 时名字指向的显存一旦销毁，画出来就是别人的纹理（"在地图上看见别的 MC 纹理"）。约定"这一帧结束后"
-	 * 就是最后一个引用消失的时刻，所以统一推迟一帧关闭。
-	 */
-	private final java.util.List<Variants> pendingClose = new java.util.ArrayList<>();
-
-	/** 记下"这一帧之后可以关"的贴图，见 {@link #pendingClose}。 */
-	private void deferClose(Variants textures) {
-		pendingClose.add(textures);
-	}
-
-	/** 关掉上一帧攒下的贴图（由 {@link #beginFrame()} 调用）。 */
-	private void flushPendingClose() {
-		if (pendingClose.isEmpty()) {
-			return;
-		}
-		for (Variants textures : pendingClose) {
-			textures.close();
-		}
-		pendingClose.clear();
-	}
-
 	/** 开始新的一帧，由界面调用（见 {@code WorldMapScreen#recordFrameCost}）。 */
 	public void beginFrame() {
-		flushPendingClose();
+		texturePool.flushPendingClose();
 		frameAsks = 0;
 		framePaints = 0;
 		frameProbes = 0;
@@ -1212,6 +1148,8 @@ public final class WorldTilePages implements Closeable {
 	@Override
 	public void close() {
 		reset();
+		// 推迟关闭的那几张已经不在 resident/cold 里了，得单独收掉
+		texturePool.close();
 	}
 
 	/**
@@ -1468,32 +1406,6 @@ public final class WorldTilePages implements Closeable {
 	}
 
 	/**
-	 * 取一对空白贴图，边长 {@code size} 像素。
-	 *
-	 * <p>叶页（512）与粗页（2 档 512、4 档 256）共用这套创建逻辑，只是尺寸不同——见 {@link #coarse}。
-	 */
-	private Variants obtain(int size) {
-		// 名字只是给渲染后端做调试标注用，每对给一个不重名的便于排查。
-		//
-		// smooth=true（放大也用线性）：这是小地图要的那一套——它是连续滑动的，
-		// 落点必然不在整数设备像素上，放大用最近邻就会一格一格地跳。
-		// 全屏地图要的是最近邻（见 ResampledTexture），它拿的是下面注册的另一个名字。
-		int serial = tileSerial++;
-		SmoothedDynamicTexture day = new SmoothedDynamicTexture(
-				"sinanmap_world_tile_" + serial + "_day", size, size, true, true);
-		SmoothedDynamicTexture night = new SmoothedDynamicTexture(
-				"sinanmap_world_tile_" + serial + "_night", size, size, true, true);
-		GpuSampler sharp = RenderSystem.getSamplerCache().getSampler(
-				AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
-				FilterMode.LINEAR, FilterMode.NEAREST, false);
-		ResampledTexture daySharp = new ResampledTexture("sinanmap_world_tile_" + serial + "_day_sharp", day, sharp);
-		ResampledTexture nightSharp = new ResampledTexture("sinanmap_world_tile_" + serial + "_night_sharp", night, sharp);
-		return new Variants(day, register(day, "day_" + serial), night, register(night, "night_" + serial),
-				daySharp, register(daySharp, "day_sharp_" + serial),
-				nightSharp, register(nightSharp, "night_sharp_" + serial));
-	}
-
-	/**
 	 * 粗档：同一批叶页的<b>更低像素密度</b>版本。
 	 *
 	 * <p>一页覆盖 1024 方块（= {@value #COARSE_PACK}×{@value #COARSE_PACK} 张叶页格位），贴图边长 =
@@ -1555,7 +1467,7 @@ public final class WorldTilePages implements Closeable {
 
 	/** 一张粗页的贴图、逐个像素的填充进度、以及"要不要传显存"。 */
 	private static final class CoarsePage {
-		private final Variants textures;
+		private final TileVariants textures;
 		/** 页键上的层，即<b>归档层</b>（见 {@link #keyLayer}）；这张粗页属于哪个档。 */
 		private final int layer;
 		/** 这些像素是按哪个<b>精确层高</b>采的（地表页就是地表哨兵）：由 {@link #refreshCoarseHeight} 判断跨档时要不要整页作废重填。 */
@@ -1592,7 +1504,7 @@ public final class WorldTilePages implements Closeable {
 		private boolean dirtyDay;
 		private boolean dirtyNight;
 
-		private CoarsePage(Variants textures, int layer, int pixelHeight, int blocksPerPixel,
+		private CoarsePage(TileVariants textures, int layer, int pixelHeight, int blocksPerPixel,
 				int pageX, int pageZ) {
 			this.textures = textures;
 			this.layer = layer;
@@ -1672,7 +1584,7 @@ public final class WorldTilePages implements Closeable {
 			}
 			// 推迟一帧再关：填充与绘制是这一帧的两步，当场 close() 会画出别人的 MC 纹理
 			// （与 leaf 那边同一条约定，见 pendingClose）
-			deferClose(eldest.getValue().textures);
+			texturePool.deferClose(eldest.getValue().textures);
 			return true;
 		}
 	};
@@ -1686,7 +1598,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * <p>页键是<b>归档层</b>；拿到已存在的页后要按精确高度校准一次（见 {@link #refreshCoarseHeight}）。
 	 */
-	public Variants coarse(int layer, int blocksPerPixel, int pageX, int pageZ) {
+	public TileVariants coarse(int layer, int blocksPerPixel, int pageX, int pageZ) {
 		long key = key(layer, gradeCode(blocksPerPixel), pageX, pageZ);
 		CoarsePage found = coarse.get(key);
 		if (found != null) {
@@ -1707,7 +1619,7 @@ public final class WorldTilePages implements Closeable {
 			return cached.textures;
 		}
 		evictCoarseOverflow();
-		Variants created = obtain(coarseSize(blocksPerPixel));
+		TileVariants created = texturePool.obtain(coarseSize(blocksPerPixel));
 		created.day().upload();
 		created.night().upload();
 		coarse.put(key, new CoarsePage(created, keyLayer(layer), layer, blocksPerPixel, pageX, pageZ));
@@ -1747,7 +1659,7 @@ public final class WorldTilePages implements Closeable {
 	 *
 	 * @return 页的贴图；常驻表里没有时返回 null。
 	 */
-	public Variants findCoarse(int layer, int blocksPerPixel, int pageX, int pageZ) {
+	public TileVariants findCoarse(int layer, int blocksPerPixel, int pageX, int pageZ) {
 		CoarsePage page = coarse.get(key(layer, gradeCode(blocksPerPixel), pageX, pageZ));
 		if (page == null) {
 			return null;
@@ -2273,19 +2185,4 @@ public final class WorldTilePages implements Closeable {
 		}
 	}
 
-	/**
-	 * 把页贴图挂到贴图管理器上，返回它的名字。
-	 *
-	 * <p>挂上去只是为了能用"带颜色"的那条 {@code blit} 画它——接受动态贴图的那条没有颜色参数，而按天色
-	 * 混合夜晚那张必须能给 alpha。
-	 *
-	 * <p>名字一对贴图一个、<b>不复用</b>：贴图被回收再用时还是同一个对象，名字继续有效；仓库关掉时贴图
-	 * 跟着关闭，之后也不会有人拿旧名字去画。管理器里会留下几条指向已关闭贴图的记录，但再次 {@code close()}
-	 * 是幂等的，关服时统一关闭不会出问题。
-	 */
-	private static Identifier register(DynamicTexture texture, String suffix) {
-		Identifier id = Identifier.fromNamespaceAndPath(SinanConstants.MOD_ID, "dynamic/world_tile_" + suffix);
-		Minecraft.getInstance().getTextureManager().register(id, texture);
-		return id;
-	}
 }

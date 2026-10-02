@@ -65,6 +65,7 @@ import sinanmap.client.map.data.ClientChunkColorProvider;
 import sinanmap.client.map.data.MapStorage;
 import sinanmap.client.map.data.WorldSaveChunks;
 import sinanmap.client.map.render.MarkerRenderer;
+import sinanmap.client.map.render.TileVariants;
 import sinanmap.client.map.render.WorldTilePages;
 import sinanmap.client.map.settings.MapSettingsScreen;
 import sinanmap.client.radar.EntityRadar;
@@ -3031,7 +3032,7 @@ public final class WorldMapScreen extends Screen {
 					coarseNoDataClearedNanos = now;
 				}
 				// 只取不建（findCoarse）：常驻表里有的直接画，取用是免费的。
-				WorldTilePages.Variants textures = tiles.findCoarse(currentLayer, terrainTier, pageX, pageZ);
+				TileVariants textures = tiles.findCoarse(currentLayer, terrainTier, pageX, pageZ);
 				if (textures == null) {
 					// 没建过的才花"每帧新建额度"。额度用完的这一帧先不建也不画（露界面底色），
 					// 下一帧接着建——这是有意的取舍：宁可少露几块底色，也不整帧卡住加显存尖峰（见常量注释）。
@@ -3089,7 +3090,7 @@ public final class WorldMapScreen extends Screen {
 						continue;
 					}
 					int x0 = (pageX - viewMinX) * size;
-					WorldTilePages.Variants textures = page.textures();
+					TileVariants textures = page.textures();
 					// 白天那张打底，夜晚那张按天色压 alpha 叠一层（白天×(1-t) + 夜晚×t）。亮度是绘制时叠的，
 					// 换天色不用重算；两张同画只有黄昏/黎明那一小段，各自省掉一半绘制调用。
 					// 用最近邻的两个名字：整页贴图下线性会把方块边缘插成一片渐变（小地图走线性的另外两个名字）。

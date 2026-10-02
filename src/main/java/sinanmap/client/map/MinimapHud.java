@@ -38,6 +38,7 @@ import sinanmap.common.waypoint.Waypoint;
 import sinanmap.client.map.data.ClientChunkColorProvider;
 import sinanmap.client.map.data.MapStorage;
 import sinanmap.client.map.render.MarkerRenderer;
+import sinanmap.client.map.render.TileVariants;
 import sinanmap.client.map.render.WorldTilePages;
 import sinanmap.client.radar.EntityRadar;
 import sinanmap.client.radar.TrackedPlayers;
@@ -770,7 +771,7 @@ public final class MinimapHud {
 				}
 				// 白天那张打底，夜晚那张按天色压 alpha 叠一层：结果是 白天×(1-t) + 夜晚×t。
 				// 两张贴图都不随时间变，所以换天色一个像素都不用重算
-				WorldTilePages.Variants textures = page.textures();
+				TileVariants textures = page.textures();
 				int x0 = pageX * size;
 				int z0 = pageZ * size;
 				if (nightAlpha < 255) {
