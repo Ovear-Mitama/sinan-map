@@ -11,6 +11,7 @@
 	"screen.sinanmap.world_map.cursor_no_y": "X=%d Z=%d",
 	"screen.sinanmap.world_map.waypoints": "Waypoints",
 	"screen.sinanmap.world_map.waypoint_search": "Search name…",
+	"screen.sinanmap.world_map.waypoint_dimension": "Dimension: %s",
 	"screen.sinanmap.world_map.jump": "Go to coords…",
 	"screen.sinanmap.world_map.tip.settings": "Settings",
 	"screen.sinanmap.world_map.tip.waypoints": "Waypoint list",

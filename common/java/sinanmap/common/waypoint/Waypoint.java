@@ -51,6 +51,15 @@ public record Waypoint(
 	public static final String DEFAULT_GROUP = "默认";
 
 	/**
+	 * 死亡地点自动归入的分组。
+	 *
+	 * <p>玩家死亡自动记下的路径点直接落在这一组里，不用和手动建的混在「默认」组里找；老版本记在
+	 * 「默认」组、名叫"上次死亡地点/此前死亡地点"的那些，会在下一次记死亡时一并挪过来（见
+	 * {@code WaypointManager#recordDeath}）。
+	 */
+	public static final String DEATH_GROUP = "死亡";
+
+	/**
 	 * 新建路径点的默认颜色。
 	 *
 	 * <p>{@code #B1EAC2}：一块浅浅的薄荷绿，压在草地上、洞穴里、下界的岩壁上都能看清，

@@ -11,6 +11,7 @@
 	"screen.sinanmap.world_map.cursor_no_y": "X: %d Z: %d",
 	"screen.sinanmap.world_map.waypoints": "路径点",
 	"screen.sinanmap.world_map.waypoint_search": "搜索名字…",
+	"screen.sinanmap.world_map.waypoint_dimension": "维度：%s",
 	"screen.sinanmap.world_map.jump": "跳转坐标…",
 	"screen.sinanmap.world_map.tip.settings": "设置",
 	"screen.sinanmap.world_map.tip.waypoints": "路径点列表",

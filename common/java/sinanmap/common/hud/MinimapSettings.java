@@ -134,8 +134,13 @@ public final class MinimapSettings {
 	public static final int MIN_CAVE_SCAN_THREADS = 1;
 	public static final int MAX_CAVE_SCAN_THREADS = 8;
 
-	/** 每帧最多把多少块读盘结果搬进缓存：自动 {@value #DEFAULT_APPLIED_PER_FRAME}。 */
-	public static final int DEFAULT_APPLIED_PER_FRAME = 128;
+	/**
+	 * 每帧最多把多少块读盘结果搬进缓存：自动 {@value #DEFAULT_APPLIED_PER_FRAME}。
+	 *
+	 * <p>只是<b>块数</b>上限，真正的时间闸是 {@link #DEFAULT_APPLY_BUDGET_MILLIS}——取 256 是让"块都很便宜"
+	 * 的场合别被块数卡住（实测数据读好了却搬不过来时，"本秒问"上千、`预算停` 却是 0）。
+	 */
+	public static final int DEFAULT_APPLIED_PER_FRAME = 256;
 	public static final int MIN_APPLIED_PER_FRAME = 32;
 	public static final int MAX_APPLIED_PER_FRAME = 512;
 
@@ -149,13 +154,25 @@ public final class MinimapSettings {
 	public static final int MIN_CHUNKS_PER_VISIT = 8;
 	public static final int MAX_CHUNKS_PER_VISIT = 256;
 
-	/** 同时在填的页数上限：自动 {@value #DEFAULT_FILLING_PAGES}。 */
-	public static final int DEFAULT_FILLING_PAGES = 8;
-	public static final int MIN_FILLING_PAGES = 2;
+	/**
+	 * 同时在填的页数上限：自动 {@value #DEFAULT_FILLING_PAGES}。
+	 *
+	 * <p><b>取 3 而不是更大</b>：之前给到 8，一屏会同时"长"出七八块半成品，进度条到处都有、都长不完，
+	 * 看起来乱；压到 3 之后最靠近玩家的那几页先把一块地方填透，整体是从玩家附近成片铺开，整齐得多。
+	 * 真正决定"每帧干多少"的是暖预算与 {@link #DEFAULT_FILLING_PAGES_PER_FRAME}，减页数不会拖慢总量。
+	 */
+	public static final int DEFAULT_FILLING_PAGES = 3;
+	public static final int MIN_FILLING_PAGES = 1;
 	public static final int MAX_FILLING_PAGES = 32;
 
-	/** 每帧并行推进几页：自动 {@value #DEFAULT_FILLING_PAGES_PER_FRAME}。 */
-	public static final int DEFAULT_FILLING_PAGES_PER_FRAME = 1;
+	/**
+	 * 每帧并行推进几页：自动 {@value #DEFAULT_FILLING_PAGES_PER_FRAME}。
+	 *
+	 * <p><b>取 3 与上面页数配套</b>：一次只喂一页时，若那页在等后台读盘，这一帧就白转；同时喂当前
+	 * 最靠近的几页，请求并行在路上，单位时间拿到的数据更多、加载更快，而总时间仍由暖预算兜底
+	 * （预算是全局一份、先到先得，这里只是让它在几页之间摊开用）。
+	 */
+	public static final int DEFAULT_FILLING_PAGES_PER_FRAME = 3;
 	public static final int MIN_FILLING_PAGES_PER_FRAME = 1;
 	public static final int MAX_FILLING_PAGES_PER_FRAME = 4;
 

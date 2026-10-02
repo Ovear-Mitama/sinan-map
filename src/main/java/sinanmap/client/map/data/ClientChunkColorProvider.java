@@ -581,6 +581,28 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
+	 * 现在看的是不是<b>别的</b>维度（不是玩家站着的那个）。
+	 *
+	 * <p>界面的"这一片有没有数据"判断必须走它：看别的维度时不能用玩家当前维度的世界存档与玩家位置，
+	 * 坐标已经按维度比例换算过，两边对不上（见 {@link #ownStorageMayHaveData}）。
+	 */
+	public boolean viewingForeignDimension() {
+		return foreignView();
+	}
+
+	/**
+	 * 看别的维度时用：这一块在"正在查看的那个维度"的本地存档里有没有可能有数据。
+	 *
+	 * <p>只查内存里的存在位图，不碰区块文件。地图据此决定"这一页值不值得建出来填"——<b>不能</b>用
+	 * 玩家当前维度的世界存档来判（见 {@link #viewingForeignDimension()}），否则坐标换算后对不上，
+	 * 有数据的页会被整片误判成"没有数据"，表现就是"切过去一直不加载"。
+	 */
+	public boolean ownStorageMayHaveData(int chunkX, int chunkZ) {
+		return storage != null
+				&& !storage.isKnownAbsent(chunkX, chunkZ, LayerSelector.storageLayer(layer));
+	}
+
+	/**
 	 * 看的是不是<b>别的</b>维度（不是玩家站着的那个）。
 	 *
 	 * <p>是的话一切都退化成"只读自己存过的那份"：当前世界里的同坐标方块属于另一个维度，
@@ -833,8 +855,12 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		}
 		// 自己没写过、连区域文件都不存在（这两步都不碰磁盘的"存在位图"与带缓存的 stat）。
 		// 用归档层查：落盘与预读都按归档层存（见 LayerSelector#storageLayer）
-		return storage != null && storage.isKnownAbsent(chunkX, chunkZ, LayerSelector.storageLayer(layer))
-				&& !WorldSaveChunks.hasRegion(minecraft, chunkX, chunkZ);
+		if (storage == null || !storage.isKnownAbsent(chunkX, chunkZ, LayerSelector.storageLayer(layer))) {
+			return false;
+		}
+		// 看的是别的维度：世界存档那条路取的是玩家<b>当前</b>维度的区域文件，与正在看的维度坐标对不上，
+		// 问它会得出错误结论——所以只能以"自己这份存档里确实没写过"为准
+		return foreignView() || !WorldSaveChunks.hasRegion(minecraft, chunkX, chunkZ);
 	}
 
 	/** 缓存里没有这一列的高度。 */

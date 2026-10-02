@@ -442,6 +442,15 @@ public final class WorldMapScreen extends Screen {
 	private String panelQuery = "";
 
 	/**
+	 * 路径点面板当前看哪个维度的路径点；{@code null} = 跟随当前显示维度（{@link #currentDimension()}）。
+	 *
+	 * <p>界面内的临时状态：不落盘，随面板一起收起（见 {@link #closePanel()}）。它只改"看"——面板列表与
+	 * 地图上的标记会切到那个维度，但地形仍是当前维度的；跨维度时按 {@link Dimensions#overworldScale}
+	 * 把显示坐标换算过来（地狱 ↔ 主世界 1:8），<b>不改动路径点自身存的坐标</b>。
+	 */
+	private String panelDimension;
+
+	/**
 	 * 维度 / 层级两个浮层的展开时刻（见 {@link #popupFade}）。
 	 *
 	 * <p>三个浮层用<b>同一套过场</b>——整块淡入，时长与路径点面板一致，
@@ -842,6 +851,7 @@ public final class WorldMapScreen extends Screen {
 			cursor = CursorTypes.POINTING_HAND;
 		} else if (hoveredButton >= 0
 				|| jumpHit(mouseX, mouseY)
+				|| panelDimensionHit(mouseX, mouseY)
 				|| panelContains(mouseX, mouseY) && panelRowAt(mouseY) >= 0) {
 			cursor = CursorTypes.POINTING_HAND;
 		}
@@ -972,8 +982,9 @@ public final class WorldMapScreen extends Screen {
 			if (waypoint.death() && !settings.showDeathPoints()) {
 				continue;
 			}
-			double x = anchorX + (waypoint.pos().x() - centerX) / perGui;
-			double y = anchorZ + (waypoint.pos().z() - centerZ) / perGui;
+			// 别的维度的路径点先换算到本地图的坐标系（地狱 ↔ 主世界 1:8），见 displayWaypointX
+			double x = anchorX + (displayWaypointX(waypoint) - centerX) / perGui;
+			double y = anchorZ + (displayWaypointZ(waypoint) - centerZ) / perGui;
 			if (x < -WAYPOINT_MARGIN || x > width + WAYPOINT_MARGIN
 					|| y < -WAYPOINT_MARGIN || y > height + WAYPOINT_MARGIN) {
 				continue;
@@ -989,13 +1000,36 @@ public final class WorldMapScreen extends Screen {
 	/** 屏幕外这么多 GUI 像素以内还画一下：标记与名字有一部分会伸进屏幕里。 */
 	private static final int WAYPOINT_MARGIN = 48;
 
-	/** 当前<b>显示</b>维度（见 {@link #displayDimension}）的路径点；切了显示维度要跟着换。 */
+	/** 路径点面板当前显示的维度（见 {@link #panelDimension}）；切了面板维度或地图维度都要跟着换。 */
+	private String panelDimensionId() {
+		return panelDimension != null ? panelDimension : currentDimension();
+	}
+
+	/** {@link #panelDimensionId()} 那个维度的路径点；面板列表与地图标记都用它。 */
 	private List<Waypoint> currentDimensionWaypoints() {
 		Minecraft minecraft = Minecraft.getInstance();
 		if (minecraft.level == null) {
 			return List.of();
 		}
-		return WaypointManager.instance().store(minecraft).inDimension(currentDimension());
+		return WaypointManager.instance().store(minecraft).inDimension(panelDimensionId());
+	}
+
+	/**
+	 * 把一条路径点的世界坐标换算到"当前显示维度"的坐标系，<b>只用于显示</b>。
+	 *
+	 * <p>比例来自 {@link Dimensions#overworldScale}：先换算到主世界口径、再换算到当前维度口径，
+	 * 于是地狱 ↔ 主世界是 1:8（地狱 ×8 = 主世界，反向 ÷8），末地与模组维度 1:1。
+	 * <b>不改动路径点自身存的坐标</b>——面板/编辑界面里那一列数值始终是它本来的坐标。
+	 */
+	private double displayWaypointX(Waypoint waypoint) {
+		return waypoint.pos().x() * Dimensions.overworldScale(waypoint.pos().dimension())
+				/ Dimensions.overworldScale(currentDimension());
+	}
+
+	/** 同 {@link #displayWaypointX}，纵向。 */
+	private double displayWaypointZ(Waypoint waypoint) {
+		return waypoint.pos().z() * Dimensions.overworldScale(waypoint.pos().dimension())
+				/ Dimensions.overworldScale(currentDimension());
 	}
 
 	/**
@@ -1115,8 +1149,9 @@ public final class WorldMapScreen extends Screen {
 			if (!waypoint.visible()) {
 				continue;
 			}
-			double x = anchorX + (waypoint.pos().x() - centerX) / perGui;
-			double y = anchorZ + (waypoint.pos().z() - centerZ) / perGui;
+			// 与绘制同一套换算：别的维度的路径点先落到本地图坐标系里再判定命中
+			double x = anchorX + (displayWaypointX(waypoint) - centerX) / perGui;
+			double y = anchorZ + (displayWaypointZ(waypoint) - centerZ) / perGui;
 			// 判定交给 WaypointRenderer：图标画在哪一格、名字多宽只有它知道，另写一套半径两边会不一致
 			if (!WaypointRenderer.hit(font, x, y, waypoint, mouseX, mouseY)) {
 				continue;
@@ -1166,14 +1201,14 @@ public final class WorldMapScreen extends Screen {
 		return best;
 	}
 
-	/** 一条路径点在屏幕上的横坐标（与地形、玩家标记同一套换算）。 */
+	/** 一条路径点在屏幕上的横坐标（与地形、玩家标记同一套换算，含跨维度换算）。 */
 	private double waypointScreenX(Waypoint waypoint) {
-		return originGuiX() + (waypoint.pos().x() - originWorldX()) / blocksPerGui();
+		return originGuiX() + (displayWaypointX(waypoint) - originWorldX()) / blocksPerGui();
 	}
 
 	/** 一条路径点在屏幕上的纵坐标。 */
 	private double waypointScreenY(Waypoint waypoint) {
-		return originGuiZ() + (waypoint.pos().z() - originWorldZ()) / blocksPerGui();
+		return originGuiZ() + (displayWaypointZ(waypoint) - originWorldZ()) / blocksPerGui();
 	}
 
 	/** 右键菜单的一项。 */
@@ -1379,9 +1414,15 @@ public final class WorldMapScreen extends Screen {
 	 */
 	private static final double DEFAULT_BLOCKS_PER_GUI_PIXEL = 2.0;
 
-	/** 自动缩放的目标值：见 {@link #DEFAULT_BLOCKS_PER_GUI_PIXEL}。 */
+	/**
+	 * 自动缩放的目标值：见 {@link #DEFAULT_BLOCKS_PER_GUI_PIXEL}。
+	 *
+	 * <p>再夹一条<b>不小于 1 个方块每设备像素</b>：地图贴图本身就是一个方块一个像素，缩放比 1:1 再近
+	 * 就只是把贴图放大——画面会变成一块块色块。夹住之后打开地图永远是
+	 * 贴图的原始清晰度；真想再放大看细节，手动缩放仍然可以（那是用户自己的选择）。
+	 */
 	private double defaultZoom() {
-		return Math.max(MIN_ZOOM, DEFAULT_BLOCKS_PER_GUI_PIXEL / guiScale());
+		return Math.max(1.0, DEFAULT_BLOCKS_PER_GUI_PIXEL / guiScale());
 	}
 
 	/**
@@ -2116,6 +2157,7 @@ public final class WorldMapScreen extends Screen {
 		tiles.ensureWorld(MapStorage.currentRoot(Minecraft.getInstance()));
 		// 换了世界/存档：上一个世界的"这一片没有数据"结论不再成立，整张作废（见 #coarseNoData）
 		coarseNoData.clear();
+		seenPages.clear();
 		coarseNoDataClearedNanos = 0L;
 		fillOrder = null;
 		viewMaxX = Integer.MIN_VALUE;
@@ -2547,12 +2589,41 @@ public final class WorldMapScreen extends Screen {
 		if (seenPages.contains(key)) {
 			return true;
 		}
+		// 看的是别的维度：不能问玩家当前维度的世界存档、也不能按玩家当前位置判"近"——坐标已按维度比例
+		// 换算过，两边对不上，会把有数据的页整片误判成"没有数据"（切过去一直不加载）。改问"正在看的那个
+		// 维度"的本地存档：这一页任意一处取样点有记录，就认为它值得建出来填。
+		if (colorProvider.viewingForeignDimension()) {
+			if (!foreignPageHasData(pageX, pageZ)) {
+				return false;
+			}
+			seenPages.add(key);
+			return true;
+		}
 		if (pageNearPlayer(pageX, pageZ)) {
 			seenPages.add(key);
 			return true;
 		}
 		return WorldSaveChunks.hasRegion(Minecraft.getInstance(),
 				pageX * WorldTilePages.PAGE_CHUNKS, pageZ * WorldTilePages.PAGE_CHUNKS);
+	}
+
+	/** 看别的维度时：这一页的几处取样点在"正在看的维度"的本地存档里有没有记录（只查内存位图）。 */
+	private boolean foreignPageHasData(int pageX, int pageZ) {
+		int side = WorldTilePages.PAGE_CHUNKS;
+		int baseX = pageX * side;
+		int baseZ = pageZ * side;
+		// 一页正好是一个区域文件的量级（32×32 区块 = 512×512 方块），取 5×5 个均匀取样点：
+		// 都在同一个区块仓库里，查的是内存位图，几乎不花钱；只要这一页有一片探索过就基本能命中。
+		for (int gx = 0; gx < 5; gx++) {
+			int cx = baseX + Math.min(side - 1, gx * side / 4);
+			for (int gz = 0; gz < 5; gz++) {
+				int cz = baseZ + Math.min(side - 1, gz * side / 4);
+				if (colorProvider.ownStorageMayHaveData(cx, cz)) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -3338,6 +3409,10 @@ public final class WorldMapScreen extends Screen {
 		if (player == null) {
 			return;
 		}
+		// 看的是别的维度：玩家根本不在这里，画在换算后的坐标上只会是"上一个维度的东西"压在别的地形上
+		if (colorProvider.viewingForeignDimension()) {
+			return;
+		}
 		// 标记单独绘制（不烘焙进地形瓦片），因此视野平移或玩家移动时不必重画任何瓦片
 		double perGui = blocksPerGui();
 		double markerX = originGuiX() + (player.getX() - originWorldX()) / perGui;
@@ -3858,6 +3933,12 @@ public final class WorldMapScreen extends Screen {
 			openJump();
 			return true;
 		}
+		if (panelDimensionHit(mouseX, mouseY)) {
+			// 维度切换那一行：点一下循环到下一个维度（与列表行是两回事，先于下面的通用面板处理）
+			blurFields();
+			cyclePanelDimension();
+			return true;
+		}
 		if (panelContains(mouseX, mouseY)) {
 			blurFields();
 			int index = panelRowAt(mouseY);
@@ -3937,6 +4018,8 @@ public final class WorldMapScreen extends Screen {
 		panelOpen = false;
 		panelScroll = 0;
 		panelQuery = "";
+		// 维度选择是面板里的临时状态：收起面板就回到"跟随当前显示维度"
+		panelDimension = null;
 	}
 
 	/** 建（或重新摆放）面板顶部的搜索框。 */
@@ -4339,6 +4422,11 @@ public final class WorldMapScreen extends Screen {
 		colorProvider.setViewDimension(dimension.equals(playerDimension) ? null : dimension);
 		// 瓦片按"层 + 页坐标"作键、不带维度：不整块丢掉就会把上一个维度的地形接着画上来
 		tiles.reset();
+		// "这一页可能有数据 / 没有数据"的结论同样按世界坐标作键、不带维度：一起作废，否则切过去会
+		// 沿用上一个维度的判断——该建的页被跳过（不加载），或拿旧结论去建新维度的页
+		seenPages.clear();
+		coarseNoData.clear();
+		coarseNoDataClearedNanos = 0L;
 		lastLayer = Integer.MAX_VALUE;
 		centerAnimActive = false;
 		viewCenterOn(x, z);
@@ -4512,7 +4600,22 @@ public final class WorldMapScreen extends Screen {
 	}
 
 	private int panelListTop() {
-		return panelSearchY() + PANEL_SEARCH_HEIGHT + 3;
+		// 搜索框与列表之间插了一行"维度切换"（见 panelDimensionY），列表顺次下移
+		return panelDimensionY() + PANEL_DIMENSION_HEIGHT + 3;
+	}
+
+	/** 面板维度切换那一行的纵坐标：夹在搜索框与列表之间。 */
+	private int panelDimensionY() {
+		return panelSearchY() + PANEL_SEARCH_HEIGHT + 2;
+	}
+
+	/** 维度切换那一行的高度：与列表行同高，绘制、点击、悬停判定共用它。 */
+	private static final int PANEL_DIMENSION_HEIGHT = PANEL_ROW_HEIGHT;
+
+	/** 光标是不是落在"维度切换"那一行上。 */
+	private boolean panelDimensionHit(double mouseX, double mouseY) {
+		return panelOpen && mouseX >= panelX() && mouseX < panelX() + PANEL_WIDTH
+				&& mouseY >= panelDimensionY() && mouseY < panelDimensionY() + PANEL_DIMENSION_HEIGHT;
 	}
 
 	/** 面板最多能下到哪：给左下角那条尺子（以及它上面的跳转按钮）让出位置。 */
@@ -4574,15 +4677,14 @@ public final class WorldMapScreen extends Screen {
 	}
 
 	/**
-	 * 重算列表：<b>当前维度</b>的路径点，按搜索词（大小写不敏感）筛过、按离玩家远近排。别的维度不列
-	 * （同一个 (x, z) 在别的维度是完全不同的地方）。只在"依据变了"（清单 / 搜索词 / 维度）时重排：
+	 * 重算列表：{@link #panelDimensionId()} 那个维度（默认就是当前显示维度）的路径点，按搜索词
+	 * （大小写不敏感）筛过、按离玩家远近排。只在"依据变了"（清单 / 搜索词 / 维度）时重排：
 	 * 绘制每帧都会问一次，而路径点很少变，每帧重排是白花时间。
 	 */
 	private void refreshPanelRows() {
 		Minecraft minecraft = Minecraft.getInstance();
 		WaypointStore store = WaypointManager.instance().store(minecraft);
-		String dimension = minecraft.level == null
-				? "" : minecraft.level.dimension().identifier().toString();
+		String dimension = panelDimensionId();
 		if (store.revision() == panelRevision && panelQuery.equals(panelBuiltQuery)
 				&& dimension.equals(panelBuiltDimension)) {
 			return;
@@ -4603,22 +4705,62 @@ public final class WorldMapScreen extends Screen {
 		if (player == null) {
 			matching.sort((first, second) -> first.name().compareTo(second.name()));
 		} else {
+			// 距离按"换算到当前地图坐标系之后"的位置算：别的维度的路径点才落在与本图同一个尺度上
 			matching.sort((first, second) -> Double.compare(
-					Math.hypot(first.pos().x() - player.getX(), first.pos().z() - player.getZ()),
-					Math.hypot(second.pos().x() - player.getX(), second.pos().z() - player.getZ())));
+					Math.hypot(displayWaypointX(first) - player.getX(), displayWaypointZ(first) - player.getZ()),
+					Math.hypot(displayWaypointX(second) - player.getX(), displayWaypointZ(second) - player.getZ())));
 		}
 		panelRows = List.copyOf(matching);
 		panelScroll = (int) Math.clamp(panelScroll, 0, panelMaxScroll());
 	}
 
+	/**
+	 * 面板维度切换可选的维度：当前显示维度排第一，其余是"存过路径点的维度"。
+	 *
+	 * <p>候选刻意取"有路径点的维度"而不是地图按钮那套可切换维度：这个控件就是给路径点列表用的，
+	 * 没有路径点的维度切过去只会看到空列表。排序沿用维度按钮那套（原版三维度优先、其余按 id）。
+	 */
+	private List<String> panelDimensionOptions() {
+		Minecraft minecraft = Minecraft.getInstance();
+		String current = currentDimension();
+		List<String> others = new ArrayList<>();
+		for (Waypoint waypoint : WaypointManager.instance().store(minecraft).view()) {
+			String dimension = waypoint.pos().dimension();
+			if (!dimension.equals(current) && !others.contains(dimension)) {
+				others.add(dimension);
+			}
+		}
+		others.sort(Comparator.comparingInt(WorldMapScreen::dimensionOrder)
+				.thenComparing(Comparator.naturalOrder()));
+		List<String> result = new ArrayList<>(others.size() + 1);
+		result.add(current);
+		result.addAll(others);
+		return result;
+	}
+
+	/** 点一下维度切换：在可选维度里循环到下一个；只有当前维度可选时什么都不做。 */
+	private void cyclePanelDimension() {
+		List<String> options = panelDimensionOptions();
+		if (options.size() <= 1) {
+			return;
+		}
+		int index = options.indexOf(panelDimensionId());
+		String next = options.get((index + 1) % options.size());
+		// 回到"当前显示维度"时清空成 null：之后地图维度按钮一换，面板也跟着换
+		panelDimension = next.equals(currentDimension()) ? null : next;
+		panelScroll = 0;
+		refreshPanelRows();
+	}
+
 	/** 点到列表里的某一条：选中它，并把地图<b>平滑</b>挪到它上面（不是瞬移）。 */
 	private void goToWaypoint(Waypoint waypoint) {
 		WaypointManager.instance().select(waypoint.id());
-		animateCenterTo(waypoint.pos().x(), waypoint.pos().z());
+		// 别的维度的路径点要换算成本地图坐标再居中（地狱 ↔ 主世界 1:8），否则会跳到不相干的地方
+		animateCenterTo(displayWaypointX(waypoint), displayWaypointZ(waypoint));
 	}
 
 	/**
-	 * 画路径点面板：标题 + 搜索框 + 当前维度的路径点列表。展开时整块淡入、高度从上往下长出来
+	 * 画路径点面板：标题 + 搜索框 + 一行"维度切换" + 路径点列表。展开时整块淡入、高度从上往下长出来
 	 * （{@link #PANEL_APPEAR_NANOS}）；命中判定一律按<b>最终尺寸</b>算（见 {@link #panelContains}），否则展开那一下点不中。
 	 */
 	private void drawWaypointPanel(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
@@ -4642,6 +4784,9 @@ public final class WorldMapScreen extends Screen {
 		// 面板顶部的搜索框：自绘输入框（与坐标跳转框同一套），宽度对齐到下面的列表行
 		searchBox.render(graphics);
 
+		// 维度切换那一行：画在"空列表"分支之前，列表为空时也要能切维度
+		drawPanelDimensionChip(graphics, mouseX, mouseY, fade);
+
 		int listTop = panelListTop();
 		if (panelRows.isEmpty()) {
 			graphics.text(font, Component.translatable("screen.sinanmap.waypoint.empty"),
@@ -4664,21 +4809,33 @@ public final class WorldMapScreen extends Screen {
 			}
 			Waypoint waypoint = panelRows.get(i);
 			int textY = rowY + (PANEL_ROW_HEIGHT - font.lineHeight + 1) / 2;
-			// 名字用路径点自己的颜色（隐藏起来的压暗），右边写"离玩家多远"
+			// 来自别的维度的那几行：右边多标一个维度名、名字用略暗的颜色，一眼能看出它不在本图上
+			boolean other = !waypoint.pos().dimension().equals(currentDimension());
+			String dimensionTag = other ? shortDimensionLabel(waypoint.pos().dimension()) : "";
+			// 名字用路径点自己的颜色（隐藏起来的压暗），右边依次是"维度名 + 离玩家多远（换算后）"
 			String distance = player == null ? "" : "%d m".formatted(Math.round(Math.hypot(
-					waypoint.pos().x() - player.getX(), waypoint.pos().z() - player.getZ())));
-			// 名字太长就截断（面板这一格放不下，画出去会压到右边的距离）
-			int nameRoom = PANEL_WIDTH - PANEL_PADDING * 2 - (distance.isEmpty() ? 0 : font.width(distance) + 4);
+					displayWaypointX(waypoint) - player.getX(), displayWaypointZ(waypoint) - player.getZ())));
+			// 名字太长就截断（面板这一格放不下，画出去会压到右边的维度名 / 距离）
+			int trailing = (distance.isEmpty() ? 0 : font.width(distance) + 4)
+					+ (dimensionTag.isEmpty() ? 0 : font.width(dimensionTag) + 4);
+			int nameRoom = PANEL_WIDTH - PANEL_PADDING * 2 - trailing;
 			String name = waypoint.name();
 			if (font.width(name) > nameRoom) {
 				name = font.plainSubstrByWidth(name, Math.max(1, nameRoom - font.width(ELLIPSIS))) + ELLIPSIS;
 			}
+			int nameColor = waypoint.visible() ? waypoint.color() : 0xFF6E6E6E;
 			graphics.text(font, name, x + PANEL_PADDING, textY,
-					alphaColor(fade, waypoint.visible() ? waypoint.color() : 0xFF6E6E6E), false);
+					alphaColor(fade, other ? dimColor(nameColor) : nameColor), false);
+			int right = x + PANEL_WIDTH - PANEL_PADDING;
 			if (!distance.isEmpty()) {
-				graphics.text(font, distance,
-						x + PANEL_WIDTH - PANEL_PADDING - font.width(distance), textY,
-						alphaColor(fade, 0xFF9CA3AF), false);
+				right -= font.width(distance);
+				graphics.text(font, distance, right, textY,
+						alphaColor(fade, other ? 0xFF7C828C : 0xFF9CA3AF), false);
+				right -= 4;
+			}
+			if (!dimensionTag.isEmpty()) {
+				right -= font.width(dimensionTag);
+				graphics.text(font, dimensionTag, right, textY, alphaColor(fade, 0xFF7C828C), false);
 			}
 		}
 		graphics.disableScissor();
@@ -4695,6 +4852,45 @@ public final class WorldMapScreen extends Screen {
 			graphics.fill(x + PANEL_WIDTH - 2, thumbY, x + PANEL_WIDTH, thumbY + thumbHeight,
 					alphaColor(fade, 0x80FFFFFF));
 		}
+	}
+
+	/**
+	 * 面板里的维度切换：搜索框与列表之间的一整行，点一下就循环到下一个可选维度。
+	 *
+	 * <p>纯自绘（半透明底 + 文字 + 右侧一个 {@code >}），不引原版贴图。选中的不是"当前显示维度"时
+	 * 文字换成暖色，提示列表与地图标记已经切到别的维度（坐标也按 1:8 换算过）。
+	 */
+	private void drawPanelDimensionChip(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float fade) {
+		int x = panelX();
+		int y = panelDimensionY();
+		int bottom = y + PANEL_DIMENSION_HEIGHT;
+		boolean hovered = panelDimensionHit(mouseX, mouseY);
+		graphics.fill(x + 1, y, x + PANEL_WIDTH - 1, bottom,
+				alphaColor(fade, hovered ? 0x30FFFFFF : 0x18FFFFFF));
+		String dimension = panelDimensionId();
+		boolean other = !dimension.equals(currentDimension());
+		int textY = y + (PANEL_DIMENSION_HEIGHT - font.lineHeight + 1) / 2;
+		graphics.text(font, Component.translatable("screen.sinanmap.world_map.waypoint_dimension",
+						dimensionLabel(dimension)),
+				x + PANEL_PADDING, textY, alphaColor(fade, other ? 0xFFFFC46B : 0xFFCCCCCC), false);
+		// 只有多个维度可选时才画 ">"：只有一个时点了也没反应，画个箭头反而误导
+		if (panelDimensionOptions().size() > 1) {
+			graphics.text(font, ">", x + PANEL_WIDTH - PANEL_PADDING - font.width(">"), textY,
+					alphaColor(fade, hovered ? 0xFFFFFFFF : 0xFF9CA3AF), false);
+		}
+	}
+
+	/** 列表行上的维度简称：原版三维度用翻译名，其它维度取名字并截断到面板能放下。 */
+	private String shortDimensionLabel(String dimension) {
+		String label = dimensionLabel(dimension).getString();
+		// 列表一格很窄：模组维度那种 "mod:some/dimension" 全画出来会把路径点名字挤没
+		int room = PANEL_WIDTH / 3;
+		return font.width(label) > room ? font.plainSubstrByWidth(label, room) : label;
+	}
+
+	/** 把颜色压暗一档（别的维度的行用）：只降不透明度，保留路径点自身的色相。 */
+	private static int dimColor(int color) {
+		return (color & 0x00FFFFFF) | 0xB0000000;
 	}
 
 	// ================================================================ 刻度尺上的坐标跳转

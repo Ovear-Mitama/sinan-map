@@ -8,6 +8,9 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.toasts.AdvancementToast;
+import net.minecraft.client.gui.components.toasts.Toast;
+import net.minecraft.client.gui.components.toasts.ToastManager;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -110,6 +113,14 @@ public final class MinimapHud {
 	 */
 	private final ZoomAnimator layerTransition = new ZoomAnimator(1.0);
 
+	/**
+	 * 右上角被原版药水图标 / 成就弹窗占着时，HUD 整体下移的动画偏移（GUI 像素）。
+	 *
+	 * <p>偏移量按时间指数逼近目标（见 {@link ZoomAnimator}），弹窗出现/消失都是一次过渡而不是瞬移，
+	 * 不会让小地图"啪"地跳一下。只改绘制落点，<b>不动用户设置的锚点</b>。
+	 */
+	private final ZoomAnimator topRightShift = new ZoomAnimator(0.0);
+
 	/** 进世界后画第一帧时记一行：小地图现在画的是与全屏地图共用的那套瓦片。 */
 	private boolean firstFrameLogged;
 
@@ -151,6 +162,8 @@ public final class MinimapHud {
 		this.colorProvider = colorProvider;
 		this.settings = settings;
 		this.tiles = WorldTilePages.shared(colorProvider);
+		// 让位用"过场"那种较慢的指数逼近：45ms 的时间常数一闪而过，看不出是一次过渡
+		this.topRightShift.setSlow(true);
 	}
 
 	/** 注册到 Fabric 的 HUD 元素注册表，画在所有原版 HUD 之上。 */
@@ -209,14 +222,18 @@ public final class MinimapHud {
 		// 天色每帧对齐一次，否则进世界的第一帧会拿着"白天"的天色去画夜晚的小地图
 		colorProvider.refreshSky();
 
-		// 缩放一律按"每 GUI 像素多少方块"理解，再除以 GUI 缩放换算成设备像素（zoom 存的是设备像素口径）。
-		// 自动档取 AUTO_BLOCKS_PER_GUI_PIXEL：按"一个方块一个设备像素"算的话，高 GUI 缩放下小地图
-		// 会覆盖上千个方块、地形糊成一片。手动档也要除：不然同一个设置值在 GUI 缩放变化时覆盖的方块数
-		// 会跟着变——窗口拉小、原版把 GUI 缩放降下来，小地图看起来就"突然放大了"（用户反馈"窗体小时
-		// 缩放特别大"）。归一到 GUI 像素后，窗口怎么变、覆盖的方块范围都不变（用户要求"保持覆盖范围不变"）。
-		zoom.setTarget((settings.autoZoom()
-				? MinimapSettings.AUTO_BLOCKS_PER_GUI_PIXEL
-				: settings.blocksPerPixel()) / guiScale);
+		// 自动档：取 AUTO_BLOCKS_PER_GUI_PIXEL（按"每 GUI 像素多少方块"），再除以 GUI 缩放换算成设备
+		// 像素（zoom 存的是设备像素口径）。夹一条"不小于 1 个方块每设备像素"：贴图就是一个方块一个
+		// 像素，比 1:1 更近只是把贴图放大、地形变成一块块色块；高 GUI 缩放下不夹的话自动档很容易
+		// 落到 1 以下，小地图就一直处于放大状态。夹住之后窗口/GUI 缩放怎么变，覆盖范围都不变。
+		//
+		// 手动档：单位就是"每设备像素多少方块"，1 就是 1:1、正好是贴图的原始清晰度，所以<b>既不除以
+		// GUI 缩放、也不夹</b>。曾经为了"覆盖范围不随窗口变"把它也除了 GUI 缩放，等于强行把贴图放大成
+		// 2 倍，小地图立刻变糊。覆盖范围随 GUI 缩放变化是手动档的固有代价，
+		// 想"范围不随窗口变"就用自动档。
+		zoom.setTarget(settings.autoZoom()
+				? Math.max(1.0, MinimapSettings.AUTO_BLOCKS_PER_GUI_PIXEL / guiScale)
+				: settings.blocksPerPixel());
 		zoom.update(deltaMillis);
 
 		float yaw = player.getYRot();
@@ -287,8 +304,12 @@ public final class MinimapHud {
 			tiles.markArrived(layer, (int) (packed >> 32), (int) packed);
 		}
 
-		// 右上角被原版的药水效果图标占着时往下让开，见 potionEffectsShift
-		int pushDown = settings.anchor() == ScreenAnchor.TOP_RIGHT ? potionEffectsShift(player) : 0;
+		// 右上角被原版的药水效果图标或成就弹窗占着时往下让开，见 topRightAvoidance。
+		// 偏移按时间平滑逼近目标：弹窗出现/消失都是一次过渡，不会瞬移抖动。
+		boolean topRight = settings.anchor() == ScreenAnchor.TOP_RIGHT;
+		topRightShift.setTarget(topRight ? topRightAvoidance(player) : 0.0);
+		topRightShift.update(deltaMillis);
+		int pushDown = (int) Math.round(topRightShift.current());
 		ScreenRect rect = MinimapLayout.compute(settings.anchor(), settings.offsetX(),
 				settings.offsetY() + pushDown,
 				settings.width(), settings.height(), graphics.guiWidth(), graphics.guiHeight());
@@ -596,12 +617,41 @@ public final class MinimapHud {
 	private static final int EFFECT_TWO_ROW_SHIFT = 53;
 
 	/**
+	 * 右上角要让开的高度（GUI 像素）：原版药水效果图标与成就/进度弹窗都画在右上角，HUD 也在右上角，
+	 * 不让开就会互相盖住。
+	 *
+	 * <p>取两者的<b>较大值</b>而不是相加：两块都贴着画面顶边往下排、在画面里本来就可能互相重叠，
+	 * 让到较高的那块下沿就够了。
+	 */
+	private static double topRightAvoidance(LocalPlayer player) {
+		return Math.max(potionEffectsShift(player), advancementToastShift());
+	}
+
+	/**
+	 * 成就/进度弹窗现在有没有在显示：有就让开一个槽位的高度。
+	 *
+	 * <p><b>用的是哪个 API</b>：本版本（26.1.2）没有 {@code ToastComponent} 这个名字，对应类是
+	 * {@link ToastManager}，入口是 {@link Minecraft#getToastManager()}。它<b>没有</b>公开的
+	 * {@code isEmpty()} / {@code getToastCount()}，可见列表与空闲槽计数都是私有的；能用的公开查询只有
+	 * {@link ToastManager#getToast(Class, Object)}（按"弹窗类型 + token"取那一条）。幸而
+	 * {@link AdvancementToast} 没有覆写 {@link Toast#getToken()}，它的 token 恒为 {@link Toast#NO_TOKEN}，
+	 * 于是 {@code getToast(AdvancementToast.class, Toast.NO_TOKEN)} 就能拿到此刻正在显示（或排队等着显示）
+	 * 的那条成就弹窗，为 {@code null} 即没有。全程公开 API，不挂 Mixin、不用反射。
+	 *
+	 * <p>已知取舍：一是它把<b>排队中</b>的弹窗也算进来，槽位占满时会让得早一点；二是它只认
+	 * {@link AdvancementToast}，也数不出"同时有几条"，所以固定让开一个槽位（{@link Toast#SLOT_HEIGHT}）。
+	 * 多条成就排队时可能让得不够——本版本没有公开 API 能数出条数。
+	 */
+	private static double advancementToastShift() {
+		ToastManager toasts = Minecraft.getInstance().getToastManager();
+		return toasts.getToast(AdvancementToast.class, Toast.NO_TOKEN) == null ? 0.0 : Toast.SLOT_HEIGHT;
+	}
+
+	/**
 	 * 右上角被原版的药水效果图标占了多高，小地图要往下让开这么多（一行 27、两行 53）。
 	 *
-	 * <p>原版把效果图标画在右上角，小地图也在右上角，不让开就会互相盖住。
-	 *
-	 * <p><b>成就弹窗（Toast）没有一起让开</b>：原版 {@code ToastManager} 的可见列表是私有的，
-	 * 不挂 Mixin 就看不到它此刻有没有在显示。
+	 * <p>成就/进度弹窗的让位见 {@link #advancementToastShift()}，两者在 {@link #topRightAvoidance()}
+	 * 里按较大值合并。
 	 */
 	private static int potionEffectsShift(LocalPlayer player) {
 		int positive = 0;

@@ -146,7 +146,7 @@ public final class WaypointManager {
 					&& waypoint.pos().blockZ() == pos.blockZ()) {
 				sameSpot = waypoint;
 			} else if (keepOld) {
-				renames.add(waypoint.withName(previous));
+				renames.add(waypoint.withName(previous).withGroup(Waypoint.DEATH_GROUP));
 			} else {
 				removals.add(waypoint);
 			}
@@ -159,8 +159,8 @@ public final class WaypointManager {
 		}
 
 		Waypoint death = sameSpot != null
-				? sameSpot.withName(last).withPos(pos)
-				: Waypoint.createDeath(last, pos, Waypoint.DEFAULT_GROUP);
+				? sameSpot.withName(last).withPos(pos).withGroup(Waypoint.DEATH_GROUP)
+				: Waypoint.createDeath(last, pos, Waypoint.DEATH_GROUP);
 		current.add(death);
 		dirty = true;
 		select(death.id());
