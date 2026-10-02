@@ -14,7 +14,6 @@ import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.Mth;
 
 import com.mojang.blaze3d.platform.cursor.CursorType;
 import com.mojang.blaze3d.platform.cursor.CursorTypes;
@@ -22,6 +21,7 @@ import com.mojang.blaze3d.platform.cursor.CursorTypes;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
+import sinanmap.client.gui.ColorPicker;
 import sinanmap.client.gui.SinanStyle;
 import sinanmap.common.coord.WorldPos;
 import sinanmap.common.waypoint.Waypoint;
@@ -103,23 +103,6 @@ public final class WaypointEditScreen extends Screen {
 	 */
 	private static final int PREVIEW_SIZE = ROW_HEIGHT;
 
-	/** 取色板的内边距。 */
-	private static final int PANEL_PAD = 6;
-
-	/**
-	 * 取色板外框的粗细（像素）。绘制（{@link #drawColorPanel}）与鼠标样式判定（{@link #updateCursor}）共用，
-	 * 两处必须一致，否则压在边框上时会漏判到底下的控件。
-	 */
-	private static final int PANEL_BORDER_WIDTH = 2;
-
-	/**
-	 * 全色选择区：<b>上面</b>是饱和度/明度方块，<b>下面</b>是横向的色相条（色相只有一维，横放既好拖也好看，竖放容易被当成第二个方块）。
-	 */
-	private static final int SV_WIDTH = 122;
-	private static final int SV_HEIGHT = 66;
-	private static final int SV_GAP = 4;
-	private static final int HUE_HEIGHT = 12;
-
 	/** 从哪一层界面打开的；关掉时回到它（null = 直接回游戏）。 */
 	private final Screen parent;
 
@@ -156,17 +139,12 @@ public final class WaypointEditScreen extends Screen {
 	private String groupInput = "";
 
 	private int color;
-	/** 当前颜色的 HSV 分量：全色选择区用它定位游标，反向也用它算出颜色。 */
-	private float hue;
-	private float saturation;
-	private float brightness;
 
 	/**
-	 * 选色板是不是开着：<b>由"点一下颜色方块"开关</b>，不跟着光标走（一移上去就弹会压住界面）。
+	 * 取色板：路径点颜色与叠加层网格颜色共用的<b>唯一</b>一份实现（见 {@link ColorPicker}）。
+	 * 颜色由它算，游标落点、拖动、命中全在它内部；这里只用 {@code setColor / color / open / close} 与它打交道。
 	 */
-	private boolean colorPanelOpen;
-	/** 正在拖的是哪一块：0 没拖、1 饱和度/明度方块、2 色相条。 */
-	private int colorDrag;
+	private final ColorPicker colorPicker = new ColorPicker();
 
 	/** 屏幕上可点的分组行（y → 分组名），每帧重算。 */
 	private final List<int[]> groupRows = new ArrayList<>();
@@ -177,12 +155,6 @@ public final class WaypointEditScreen extends Screen {
 	/** 颜色预览方块的位置（每帧重算）。<b>高度与输入框一致</b>（见 {@link #PREVIEW_SIZE}）。 */
 	private int previewLeft;
 	private int previewTop;
-
-	/** 选色板的位置与尺寸（每帧按预览方块算）。 */
-	private int panelLeft;
-	private int panelTop;
-	private int panelWidth;
-	private int panelHeight;
 
 	// ------------------------------------------------ 竖直排版（按窗口算，见 #layout）
 	// 行距与分组行数都能收，整块高度随之变小，保证底部按钮在矮窗口下也留在窗内
@@ -242,7 +214,8 @@ public final class WaypointEditScreen extends Screen {
 		this.group = editing != null ? editing.group()
 				: (group == null || group.isBlank() ? Waypoint.DEFAULT_GROUP : group);
 		this.color = editing != null ? editing.color() : Waypoint.DEFAULT_COLOR;
-		syncHsvFromColor();
+		// 先把颜色喂给取色板，打开时游标就落在当前颜色上（见 ColorPicker 的说明）
+		colorPicker.setColor(color);
 	}
 
 	@Override
@@ -416,9 +389,8 @@ public final class WaypointEditScreen extends Screen {
 
 		// 控件画在最上层，所以放在最后；取色板又要压在控件之上（它是弹出来的）
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
-		if (colorPanelOpen) {
-			drawColorPanel(graphics);
-		}
+		// 取色板只有在打开时才会画，开没开由它自己判断
+		colorPicker.render(graphics);
 		// 鼠标样式最后设：一帧里最后一次 requestCursor 才生效（见 updateCursor）
 		updateCursor(graphics, mouseX, mouseY);
 	}
@@ -440,21 +412,18 @@ public final class WaypointEditScreen extends Screen {
 	 */
 	private void updateCursor(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
 		// 正在拖：拖到哪儿都保持那个样式（拖动中本来就不该看底下的控件）
-		if (colorDrag != 0) {
-			graphics.requestCursor(colorDrag == 1 ? CursorTypes.CROSSHAIR : CursorTypes.RESIZE_EW);
+		int dragKind = colorPicker.dragKind();
+		if (dragKind != ColorPicker.DRAG_NONE) {
+			graphics.requestCursor(dragKind == ColorPicker.DRAG_SV
+					? CursorTypes.CROSSHAIR : CursorTypes.RESIZE_EW);
 			return;
 		}
 		// 取色板浮在最上面：落在板上就按板上的东西给样式，并<b>到此为止</b>（外框那圈描边也算在板内，
-		// 否则压着边框时还是会漏到底下的控件）
-		if (colorPanelOpen && inside(mouseX, mouseY,
-				panelLeft - PANEL_BORDER_WIDTH, panelTop - PANEL_BORDER_WIDTH,
-				panelWidth + PANEL_BORDER_WIDTH * 2, panelHeight + PANEL_BORDER_WIDTH * 2)) {
-			CursorType onPanel = CursorTypes.ARROW;
-			if (inside(mouseX, mouseY, svLeft(), hueTop(), SV_WIDTH, HUE_HEIGHT)) {
-				onPanel = CursorTypes.RESIZE_EW;
-			} else if (inside(mouseX, mouseY, svLeft(), svTop(), SV_WIDTH, SV_HEIGHT)) {
-				onPanel = CursorTypes.CROSSHAIR;
-			}
+		// 否则压着边框时还是会漏到底下的控件）。contains 只在板打开时才为真
+		if (colorPicker.contains(mouseX, mouseY)) {
+			int hover = colorPicker.hoverKind(mouseX, mouseY);
+			CursorType onPanel = hover == ColorPicker.DRAG_SV ? CursorTypes.CROSSHAIR
+					: hover == ColorPicker.DRAG_HUE ? CursorTypes.RESIZE_EW : CursorTypes.ARROW;
 			graphics.requestCursor(onPanel);
 			return;
 		}
@@ -491,7 +460,7 @@ public final class WaypointEditScreen extends Screen {
 	}
 
 	/**
-	 * 颜色那一行：预览方块 + 右边紧跟的色号输入框。方块<b>点一下才展开</b>取色板（见 {@link #colorPanelOpen}）；
+	 * 颜色那一行：预览方块 + 右边紧跟的色号输入框。方块<b>点一下才展开</b>取色板（见 {@link ColorPicker}）；
 	 * 方块画在输入列起点、与名字框共用左边界，边长取 {@link #ROW_HEIGHT}，与右边框上下沿齐平。
 	 */
 	private void drawColorRow(GuiGraphicsExtractor graphics, int top, int mouseX, int mouseY) {
@@ -500,194 +469,32 @@ public final class WaypointEditScreen extends Screen {
 		previewTop = top + colorTop;
 		// 这一小块本身就是"点开取色板"的按钮，所以边框跟着鼠标走：常态一圈暗的、
 		// 悬停/打开时套一圈亮的——与自绘按钮同一套表现
-		boolean hovered = inside(mouseX, mouseY, previewLeft - 1, previewTop - 1,
-				PREVIEW_SIZE + 2, PREVIEW_SIZE + 2);
-		SinanStyle.outline(graphics, previewLeft - 1, previewTop - 1,
-				PREVIEW_SIZE + 2, PREVIEW_SIZE + 2,
-				hovered || colorPanelOpen ? SinanStyle.BORDER_HOVER : SinanStyle.BORDER_IDLE);
-		graphics.fill(previewLeft, previewTop, previewLeft + PREVIEW_SIZE, previewTop + PREVIEW_SIZE, color);
+		boolean hovered = inside(mouseX, mouseY, previewLeft, previewTop, PREVIEW_SIZE, PREVIEW_SIZE);
+		// 边框画在方块<b>自己的边界上</b>（不是往外扩一圈）：往外扩的话整块是 22 像素高，比右边
+		// ROW_HEIGHT 的输入框高出两像素，看着就是"没对齐"。画在边界上，外沿正好齐平。
+		SinanStyle.outline(graphics, previewLeft, previewTop, PREVIEW_SIZE, PREVIEW_SIZE,
+				hovered || colorPicker.isOpen() ? SinanStyle.BORDER_HOVER : SinanStyle.BORDER_IDLE);
+		graphics.fill(previewLeft + 1, previewTop + 1,
+				previewLeft + PREVIEW_SIZE - 1, previewTop + PREVIEW_SIZE - 1, color);
 	}
 
 	/**
-	 * 算出取色板画在哪、多大。画之前先算一次、命中判定也用同一份，两处若各算一套会对不上。
+	 * 把取色板摆到屏幕上的哪块位置（大小由 {@link ColorPicker} 自己定）。
 	 *
 	 * <p><b>绝不盖住颜色那一行</b>：优先贴在颜色行<b>下面</b>；下面被按钮挡住就整块抬到颜色行<b>上面</b>——
 	 * 名字、简称、坐标那几行多半已填完，被压住没关系，颜色行必须看得见。
 	 */
 	private void layoutColorPanel(int top) {
-		panelWidth = PANEL_PAD * 2 + SV_WIDTH;
-		panelHeight = PANEL_PAD * 2 + SV_HEIGHT + SV_GAP + HUE_HEIGHT;
+		int panelWidth = colorPicker.width();
+		int panelHeight = colorPicker.height();
 		int colorRowTop = top + colorTop;
 		int below = colorRowTop + ROW_HEIGHT + 4;
 		int panelTopWanted = below + panelHeight <= height - 4
 				? below
 				: colorRowTop - 4 - panelHeight;
-		panelTop = (int) Math.clamp(panelTopWanted, 4, Math.max(4, height - panelHeight - 4));
-		panelLeft = Math.clamp(previewLeft, 4, Math.max(4, width - panelWidth - 4));
-	}
-
-	/** 饱和度/明度方块的位置（面板左上角往里让一个内边距）。 */
-	private int svLeft() {
-		return panelLeft + PANEL_PAD;
-	}
-
-	private int svTop() {
-		return panelTop + PANEL_PAD;
-	}
-
-	/** 横向色相条的位置：就在方块正下方。 */
-	private int hueTop() {
-		return svTop() + SV_HEIGHT + SV_GAP;
-	}
-
-	/** 取色板：上面是饱和度/明度方块，下面是横向色相条。 */
-	private void drawColorPanel(GuiGraphicsExtractor graphics) {
-		int left = panelLeft;
-		int top = panelTop;
-
-		graphics.fill(left - PANEL_BORDER_WIDTH, top - PANEL_BORDER_WIDTH,
-				left + panelWidth + PANEL_BORDER_WIDTH, top + panelHeight + PANEL_BORDER_WIDTH,
-				0xF0101014);
-		// 高光那条线画在<b>底边</b>（下边白线，与输入框统一）
-		graphics.fill(left - PANEL_BORDER_WIDTH, top + panelHeight + PANEL_BORDER_WIDTH - 1,
-				left + panelWidth + PANEL_BORDER_WIDTH, top + panelHeight + PANEL_BORDER_WIDTH,
-				0x60FFFFFF);
-
-		int svLeft = svLeft();
-		int svTop = svTop();
-		drawSvSquare(graphics, svLeft, svTop);
-		drawHueBar(graphics, svLeft, hueTop());
-		// 两个游标：方块里一个十字、色相条上一根小竖条（色相只有一维，用十字是误导）
-		marker(graphics, svLeft + Math.round(saturation * (SV_WIDTH - 1)),
-				svTop + Math.round((1.0F - brightness) * (SV_HEIGHT - 1)));
-		hueMarker(graphics, svLeft + Math.round(hue * (SV_WIDTH - 1)), hueTop());
-	}
-
-	/**
-	 * 饱和度 / 明度方块：横轴是饱和度、纵轴是明度，色相由色相条给定。
-	 *
-	 * <p>横向渐变没有现成接口（原版 {@code fillGradient} 只做竖向），所以按列画：一列一个竖向渐变
-	 * （上全亮、下全黑），列间饱和度不同。只在取色板打开时画，代价可接受。
-	 */
-	private void drawSvSquare(GuiGraphicsExtractor graphics, int left, int top) {
-		for (int x = 0; x < SV_WIDTH; x++) {
-			float sat = x / (float) (SV_WIDTH - 1);
-			graphics.fillGradient(left + x, top, left + x + 1, top + SV_HEIGHT,
-					hsv(sat, 1.0F), hsv(sat, 0.0F));
-		}
-		frame(graphics, left, top, SV_WIDTH, SV_HEIGHT);
-	}
-
-	/**
-	 * 色相条：横向铺开，右边回到红色。一维色相<b>横着放</b>（竖着摆既挤、又容易被当成第二个方块去拖）；
-	 * 同样按列画，每列一个饱和度/明度拉满的纯色相。
-	 */
-	private void drawHueBar(GuiGraphicsExtractor graphics, int left, int top) {
-		for (int x = 0; x < SV_WIDTH; x++) {
-			graphics.fill(left + x, top, left + x + 1, top + HUE_HEIGHT,
-					hueColor(x / (float) (SV_WIDTH - 1)));
-		}
-		frame(graphics, left, top, SV_WIDTH, HUE_HEIGHT);
-	}
-
-	/**
-	 * 色相（0..1）→ 饱和度/明度都拉满的纯色。
-	 *
-	 * <p>色相是个<b>环</b>，{@code 1.0} 与 {@code 0.0} 是同一种红。但 {@code Mth.hsvToArgb} 先取整 {@code hue * 6} 再 {@code % 6}：
-	 * {@code hue = 1.0} 时整数部分归 0、小数部分却是 {@code 6.0}，算出来偏黄（色相条最右端那块黄）。
-	 * 这里把 {@code 1.0} 折回 {@code 0}，色带才红→…→红平滑闭合。
-	 */
-	private static int hueColor(float hue) {
-		return hsvAt(hue >= 1.0F ? 0.0F : hue, 1.0F, 1.0F);
-	}
-
-	/** 给一块取色区描一圈深色边：压在任何底色上都能看清边界。 */
-	private static void frame(GuiGraphicsExtractor graphics, int left, int top, int width, int height) {
-		graphics.fill(left - 1, top - 1, left + width + 1, top, PANEL_BORDER);
-		graphics.fill(left - 1, top + height, left + width + 1, top + height + 1, PANEL_BORDER);
-		graphics.fill(left - 1, top, left, top + height, PANEL_BORDER);
-		graphics.fill(left + width, top, left + width + 1, top + height, PANEL_BORDER);
-	}
-
-	/** 取色区边框的深色（半透明黑，压在渐变上也看得见）。 */
-	private static final int PANEL_BORDER = 0x90000000;
-
-	/** 十字游标那一条臂的半长（像素）：外接范围正好 {@code 5×5}（中心 1 格 + 每边 2 格）。 */
-	private static final int MARKER_ARM = 2;
-
-	/** 十字本体：纯白实心。逐格上色，每格只涂一次。 */
-	private static final int MARKER_BODY = 0xFFFFFFFF;
-
-	/** 十字描边：半透明深色，最多 1 像素，且只落在本体之外的相邻格上。 */
-	private static final int MARKER_OUTLINE = 0x80101014;
-
-	/**
-	 * 饱和度/明度方块里的"十"字游标。
-	 *
-	 * <p><b>以 (x, y) 为正中心</b>：横臂与竖臂各 1 像素宽、半长 {@link #MARKER_ARM} 格，加中心一格，本体外接正好 {@code 5×5}。
-	 *
-	 * <p>画法不是矩形拼贴，而是<b>先把整块像素算成网格、再逐格上色</b>：取 {@code (2r+1)×(2r+1)} 网格
-	 * （{@code r = ARM + 1}，多留一圈给描边），本体标进 {@code body}，本体格的上下左右邻格中<b>不属于本体</b>的
-	 * 标进 {@code outline}（集合，多次标只算一次），最后每格只调一次 {@code fill}，按 body / outline / 空三选一。
-	 *
-	 * <p>这样"任何像素只被涂一次"是结构上保证的：描边不会在同一像素叠两遍，也就不会出现深浅不一的黑色杂点。
-	 */
-	private static void marker(GuiGraphicsExtractor graphics, int x, int y) {
-		int arm = MARKER_ARM;
-		int radius = arm + 1;
-		int size = radius * 2 + 1;
-		boolean[] body = new boolean[size * size];
-		boolean[] outline = new boolean[size * size];
-		// 本体：横臂 (dx, 0) 与竖臂 (0, dy)；中心格只在横臂里标一次
-		for (int dx = -arm; dx <= arm; dx++) {
-			body[markerIndex(dx, 0, radius)] = true;
-		}
-		for (int dy = -arm; dy <= arm; dy++) {
-			body[markerIndex(0, dy, radius)] = true;
-		}
-		// 描边：每个本体格的上下左右邻格，排除本体本身（半径多留的那一圈正好容得下）
-		for (int dx = -arm; dx <= arm; dx++) {
-			for (int dy = -arm; dy <= arm; dy++) {
-				if (!body[markerIndex(dx, dy, radius)]) {
-					continue;
-				}
-				markOutline(outline, body, dx + 1, dy, radius);
-				markOutline(outline, body, dx - 1, dy, radius);
-				markOutline(outline, body, dx, dy + 1, radius);
-				markOutline(outline, body, dx, dy - 1, radius);
-			}
-		}
-		// 逐格上色：每格只画一次，互不重叠
-		for (int dx = -radius; dx <= radius; dx++) {
-			for (int dy = -radius; dy <= radius; dy++) {
-				int i = markerIndex(dx, dy, radius);
-				if (body[i]) {
-					graphics.fill(x + dx, y + dy, x + dx + 1, y + dy + 1, MARKER_BODY);
-				} else if (outline[i]) {
-					graphics.fill(x + dx, y + dy, x + dx + 1, y + dy + 1, MARKER_OUTLINE);
-				}
-			}
-		}
-	}
-
-	/** 网格下标：把以中心为原点的偏移 (dx, dy) 映射进 {@code (2r+1)×(2r+1)} 的一维数组。 */
-	private static int markerIndex(int dx, int dy, int radius) {
-		int size = radius * 2 + 1;
-		return (dx + radius) * size + (dy + radius);
-	}
-
-	/** 把 (dx, dy) 标成描边——除非那一格是本体（本体不描边）。 */
-	private static void markOutline(boolean[] outline, boolean[] body, int dx, int dy, int radius) {
-		int i = markerIndex(dx, dy, radius);
-		if (!body[i]) {
-			outline[i] = true;
-		}
-	}
-
-	/** 横向色相条上的游标：一根小竖条 + 深色描边（同样是"线"而不是"块"）。 */
-	private static void hueMarker(GuiGraphicsExtractor graphics, int x, int top) {
-		graphics.fill(x - 1, top, x + 2, top + HUE_HEIGHT, PANEL_BORDER);
-		graphics.fill(x, top, x + 1, top + HUE_HEIGHT, 0xFFFFFFFF);
+		int panelTop = (int) Math.clamp(panelTopWanted, 4, Math.max(4, height - panelHeight - 4));
+		int panelLeft = Math.clamp(previewLeft, 4, Math.max(4, width - panelWidth - 4));
+		colorPicker.setPosition(panelLeft, panelTop);
 	}
 
 	/** 一个颜色写成 {@code #RRGGBB}。 */
@@ -714,7 +521,14 @@ public final class WaypointEditScreen extends Screen {
 			return;
 		}
 		color = 0xFF000000 | parsed;
-		syncHsvFromColor();
+		// 手敲的色号也是"当前颜色"：喂回取色板，游标跟着挪过去，两边始终是同一个颜色
+		colorPicker.setColor(color);
+	}
+
+	/** 从取色板取回颜色，并把色号同步回右边那个输入框（拖动 / 点击取色时调）。 */
+	private void syncColorFromPicker() {
+		color = colorPicker.color();
+		setColorText(hex(color));
 	}
 
 	/** 把色号回写进输入框（拖动取色板时用；{@link #syncingColorText} 挡住 responder 的绕圈）。 */
@@ -814,8 +628,10 @@ public final class WaypointEditScreen extends Screen {
 		}
 		graphics.disableScissor();
 		drawGroupScrollbar(graphics, left, listTop, viewport, content);
-		// 输入框固定在列表下面，不跟着滚
-		drawGroupInput(graphics, mouseX, mouseY, left, listTop + viewport);
+		// 输入框紧跟"最后一行分组"之后——它本身就是列表的最后一项。
+		// 分组多到装不下时才退回贴住列表底边：那时"最后一行"已经被挤到视口外了，跟着它只会跑到看不见的地方。
+		drawGroupInput(graphics, mouseX, mouseY, left,
+				content <= viewport ? y : listTop + viewport);
 	}
 
 	/** 分组列表的滚动条：装得下就不画（没有可滚的东西时那条灰杠反而是干扰）。 */
@@ -906,19 +722,20 @@ public final class WaypointEditScreen extends Screen {
 		double mouseY = event.y();
 
 		// 取色板开着时它最优先：点方块 / 点色相条都算在选颜色
-		if (colorPanelOpen) {
-			if (handleColorPanelClick(mouseX, mouseY)) {
+		if (colorPicker.isOpen()) {
+			if (colorPicker.mouseClicked(mouseX, mouseY)) {
+				syncColorFromPicker();
 				return true;
 			}
-			// 点在面板外面：收起取色板，这一下不再做别的事
+			// 点在取色板之外（含内边距那圈）：收起它，这一下不再做别的事
 			// （否则刚合上就顺手点到了底下的控件）
-			colorPanelOpen = false;
-			colorDrag = 0;
+			colorPicker.close();
 			return true;
 		}
-		// 点颜色方块：展开取色板（见 #colorPanelOpen）
+		// 点颜色方块：展开取色板（见 {@link ColorPicker}），先把当前颜色喂进去，游标才落在它上面
 		if (inside(mouseX, mouseY, previewLeft - 1, previewTop - 1, PREVIEW_SIZE + 2, PREVIEW_SIZE + 2)) {
-			colorPanelOpen = true;
+			colorPicker.setColor(color);
+			colorPicker.open();
 			return true;
 		}
 		int groupRow = groupIndexAt(mouseX, mouseY);
@@ -934,34 +751,11 @@ public final class WaypointEditScreen extends Screen {
 		return super.mouseClicked(event, doubleClick);
 	}
 
-	/**
-	 * 取色板里的一下点击：方块 / 色相条 → 记下在拖哪一块并立刻取色。
-	 *
-	 * @return 这一下点击是不是被取色板吃掉了
-	 */
-	private boolean handleColorPanelClick(double mouseX, double mouseY) {
-		if (inside(mouseX, mouseY, svLeft(), svTop(), SV_WIDTH, SV_HEIGHT)) {
-			colorDrag = 1;
-			pickFromSv(mouseX, mouseY);
-			return true;
-		}
-		if (inside(mouseX, mouseY, svLeft(), hueTop(), SV_WIDTH, HUE_HEIGHT)) {
-			colorDrag = 2;
-			pickFromHue(mouseX);
-			return true;
-		}
-		// 面板的空白处（那几条内边距）不算"在选颜色"，交给调用方当作"点在外面"处理
-		return false;
-	}
-
 	@Override
 	public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
-		if (colorDrag == 1) {
-			pickFromSv(event.x(), event.y());
-			return true;
-		}
-		if (colorDrag == 2) {
-			pickFromHue(event.x());
+		if (colorPicker.dragKind() != ColorPicker.DRAG_NONE) {
+			colorPicker.mouseDragged(event.x(), event.y());
+			syncColorFromPicker();
 			return true;
 		}
 		return super.mouseDragged(event, dragX, dragY);
@@ -969,70 +763,8 @@ public final class WaypointEditScreen extends Screen {
 
 	@Override
 	public boolean mouseReleased(MouseButtonEvent event) {
-		colorDrag = 0;
+		colorPicker.mouseReleased();
 		return super.mouseReleased(event);
-	}
-
-	/** 方块里的一点 → 饱和度（横）与明度（纵）。 */
-	private void pickFromSv(double mouseX, double mouseY) {
-		int left = svLeft();
-		int top = svTop();
-		saturation = (float) Math.clamp((mouseX - left) / (SV_WIDTH - 1.0), 0.0, 1.0);
-		brightness = (float) Math.clamp(1.0 - (mouseY - top) / (SV_HEIGHT - 1.0), 0.0, 1.0);
-		applyColor();
-	}
-
-	/** 横向色相条上的 x → 色相。 */
-	private void pickFromHue(double mouseX) {
-		int left = svLeft();
-		hue = (float) Math.clamp((mouseX - left) / (SV_WIDTH - 1.0), 0.0, 1.0);
-		applyColor();
-	}
-
-	/** 由 HSV 算出颜色，并把色号同步回右边那个输入框。 */
-	private void applyColor() {
-		color = hsv(saturation, brightness);
-		setColorText(hex(color));
-	}
-
-	/** 当前色相 + 给定饱和度、明度 → 不透明颜色。 */
-	private int hsv(float saturation, float brightness) {
-		// 与 hueColor 同一个道理：游标拖到最右端时 hue 恰好是 1.0，折回 0 才不会算出黄色
-		return hsvAt(hue >= 1.0F ? 0.0F : hue, saturation, brightness);
-	}
-
-	/** HSV → 不透明颜色（用原版的换算，省得自己写一遍分段的 RGB 公式）。 */
-	private static int hsvAt(float hue, float saturation, float brightness) {
-		return Mth.hsvToArgb(hue, saturation, brightness, 255);
-	}
-
-	/** 把当前颜色反解成 HSV：切到全色选择区时，游标落在当前颜色上而不是角落里。 */
-	private void syncHsvFromColor() {
-		int red = color >> 16 & 0xFF;
-		int green = color >> 8 & 0xFF;
-		int blue = color & 0xFF;
-		int max = Math.max(red, Math.max(green, blue));
-		int min = Math.min(red, Math.min(green, blue));
-		int range = max - min;
-		brightness = max / 255.0F;
-		saturation = max == 0 ? 0.0F : range / (float) max;
-		if (range == 0) {
-			hue = 0.0F;
-			return;
-		}
-		float r = (max - red) / (float) range;
-		float g = (max - green) / (float) range;
-		float b = (max - blue) / (float) range;
-		if (red == max) {
-			hue = (b - g) / 6.0F;
-		} else if (green == max) {
-			hue = 1.0F / 3.0F + (r - b) / 6.0F;
-		} else {
-			hue = 2.0F / 3.0F + (g - r) / 6.0F;
-		}
-		if (hue < 0.0F) {
-			hue += 1.0F;
-		}
 	}
 
 	private void startTypingGroup() {

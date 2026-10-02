@@ -6,6 +6,7 @@ import java.util.Random;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.level.Level;
 
 import sinanmap.common.SinanConstants;
 
@@ -58,12 +59,19 @@ public final class ChunkOverlays {
 	}
 
 	/**
-	 * 能不能标史莱姆区块。
+	 * 这一局能不能标史莱姆区块。两个前提：
 	 *
-	 * <p>史莱姆区块完全由世界种子决定，而客户端默认拿不到种子——只有单人（集成服务端）才有。
-	 * 多人服上取不到就整层不画，而不是按错误的种子瞎标。
+	 * <p><b>① 人在主世界。</b>这套"种子 + 区块坐标"的哈希只决定<b>主世界</b>的史莱姆区块，下界与末地
+	 * 根本没有这回事。不加这个判断的话，末地会被照着同一套哈希标出一堆"史莱姆区块"——那是假信息。
+	 *
+	 * <p><b>② 拿得到种子。</b>史莱姆区块完全由世界种子决定，而客户端默认拿不到种子——只有单人
+	 * （集成服务端）才有。多人服上取不到就整层不画，而不是按错误的种子瞎标。
 	 */
-	public static boolean hasSeed() {
+	public static boolean canMarkSlimeChunks() {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.level == null || minecraft.level.dimension() != Level.OVERWORLD) {
+			return false;
+		}
 		return seed() != NO_SEED;
 	}
 

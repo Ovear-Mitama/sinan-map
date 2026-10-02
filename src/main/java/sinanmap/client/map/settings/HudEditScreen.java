@@ -38,13 +38,17 @@ public final class HudEditScreen extends Screen {
 	private static final int HANDLE_SIZE = 5;
 
 	/**
-	 * 斜向缩放光标：{@link CursorTypes} 只有 {@code RESIZE_ALL}，斜向两个按 GLFW 标准光标自建，
-	 * {@code 0x36006} 左上↔右下、{@code 0x36007} 右上↔左下。
+	 * 斜向缩放光标：{@link CursorTypes} 只有上下/左右/全向这三个，斜向两个按 GLFW 标准光标自建。
+	 *
+	 * <p>id 取 GLFW 的取值：{@code 0x36007} = 左上↔右下（沿对角线调整大小 1）、
+	 * {@code 0x36008} = 右上↔左下（…2）。<b>别写成 0x36006</b>——那一位是"上下缩放"：
+	 * 之前两个 id 整体错了一位（0x36006/0x36007），于是左上/右下角画出来是竖箭头、
+	 * 右上/左下角画成了左上↔右下。
 	 */
 	private static final CursorType RESIZE_NWSE =
-			CursorType.createStandardCursor(0x00036006, "resize_nwse", CursorTypes.RESIZE_ALL);
+			CursorType.createStandardCursor(0x00036007, "resize_nwse", CursorTypes.RESIZE_ALL);
 	private static final CursorType RESIZE_NESW =
-			CursorType.createStandardCursor(0x00036007, "resize_nesw", CursorTypes.RESIZE_ALL);
+			CursorType.createStandardCursor(0x00036008, "resize_nesw", CursorTypes.RESIZE_ALL);
 
 	/** 八个拖点：0..3 依次是左上/上/右上/右，4..7 依次是右下/下/左下/左。 */
 	private static final int NW = 0;
@@ -126,6 +130,8 @@ public final class HudEditScreen extends Screen {
 	/** 拖点对应的鼠标样式：角是斜向缩放，左右边是水平、上下边是垂直。 */
 	private static CursorType cursorFor(int handle) {
 		return switch (handle) {
+			// 左上/右下 = "沿对角线调整大小 1"（↖↘），右上/左下 = "…2"（↗↙）。
+			// 样式由上面两个常量的 GLFW id 决定，见那里的说明（之前错了一位，画出来是反的）
 			case NW, SE -> RESIZE_NWSE;
 			case NE, SW -> RESIZE_NESW;
 			case W, E -> CursorTypes.RESIZE_EW;

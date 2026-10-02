@@ -25,7 +25,7 @@ public final class ColorPicker {
 
 	/** 色相条的高度，以及它与方块之间留的空隙。 */
 	private static final int HUE_HEIGHT = 12;
-	private static final int SV_GAP = 5;
+	private static final int SV_GAP = 4;
 
 	/** 面板内边距与外描边宽度。 */
 	private static final int PANEL_PAD = 6;
@@ -153,7 +153,12 @@ public final class ColorPicker {
 		return inside(mouseX, mouseY, svLeft(), hueTop(), SV_WIDTH, HUE_HEIGHT) ? DRAG_HUE : DRAG_NONE;
 	}
 
-	/** 在面板上按下：记下拖的是哪一块并立刻取色。 */
+	/**
+	 * 在面板上按下：记下拖的是哪一块并立刻取色。
+	 *
+	 * <p>只有落在两个取色区（方块 / 色相条）上才算"吃掉了这一下"；点在面板的内边距那圈也返回
+	 * {@code false}，由宿主当作"点在外面"处理——两边宿主都借这一下收起取色板（与路径点界面一致）。
+	 */
 	public boolean mouseClicked(double mouseX, double mouseY) {
 		if (!open) {
 			return false;
@@ -168,8 +173,7 @@ public final class ColorPicker {
 			pickFromHue(mouseX);
 			return true;
 		}
-		// 点在面板的其它地方（内边距那圈）：吃掉这一下，别让底下的地图跟着动
-		return contains(mouseX, mouseY);
+		return false;
 	}
 
 	/** 拖动取色（宿主把每一次鼠标移动都转进来）。 */

@@ -135,6 +135,10 @@ public final class MinimapSettingsIO {
 		json.addProperty("chunkGrid", settings.chunkGrid());
 		json.addProperty("chunkGridColor", settings.chunkGridColor());
 		json.addProperty("slimeChunks", settings.slimeChunks());
+		json.addProperty("compass", settings.compass());
+		json.addProperty("compassColor", settings.compassColor());
+		json.addProperty("compassBackgroundColor", settings.compassBackgroundColor());
+		json.addProperty("compassScale", settings.compassScale());
 
 		json.addProperty("infoAlign", settings.infoAlign().name());
 		json.addProperty("clock24", settings.clock24());
@@ -194,6 +198,11 @@ public final class MinimapSettingsIO {
 		settings.setChunkGrid(bool(json, "chunkGrid", settings.chunkGrid()));
 		settings.setChunkGridColor(integer(json, "chunkGridColor", settings.chunkGridColor()));
 		settings.setSlimeChunks(bool(json, "slimeChunks", settings.slimeChunks()));
+		settings.setCompass(bool(json, "compass", settings.compass()));
+		settings.setCompassColor(integer(json, "compassColor", settings.compassColor()));
+		settings.setCompassBackgroundColor(
+				integer(json, "compassBackgroundColor", settings.compassBackgroundColor()));
+		settings.setCompassScale(decimal(json, "compassScale", settings.compassScale()));
 
 		settings.setInfoAlign(enumOf(MinimapSettings.TextAlign.class,
 				string(json, "infoAlign"), settings.infoAlign()));

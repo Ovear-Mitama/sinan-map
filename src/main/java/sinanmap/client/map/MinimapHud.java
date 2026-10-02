@@ -209,11 +209,14 @@ public final class MinimapHud {
 		// 天色每帧对齐一次，否则进世界的第一帧会拿着"白天"的天色去画夜晚的小地图
 		colorProvider.refreshSky();
 
-		// 自动缩放：每个 GUI 像素代表固定多少方块（见 MinimapSettings.AUTO_BLOCKS_PER_GUI_PIXEL）。
-		// 按"一个方块一个设备像素"来算的话，高 GUI 缩放下小地图会覆盖上千个方块，地形全糊成一片。
-		zoom.setTarget(settings.autoZoom()
-				? MinimapSettings.AUTO_BLOCKS_PER_GUI_PIXEL / guiScale
-				: settings.blocksPerPixel());
+		// 缩放一律按"每 GUI 像素多少方块"理解，再除以 GUI 缩放换算成设备像素（zoom 存的是设备像素口径）。
+		// 自动档取 AUTO_BLOCKS_PER_GUI_PIXEL：按"一个方块一个设备像素"算的话，高 GUI 缩放下小地图
+		// 会覆盖上千个方块、地形糊成一片。手动档也要除：不然同一个设置值在 GUI 缩放变化时覆盖的方块数
+		// 会跟着变——窗口拉小、原版把 GUI 缩放降下来，小地图看起来就"突然放大了"（用户反馈"窗体小时
+		// 缩放特别大"）。归一到 GUI 像素后，窗口怎么变、覆盖的方块范围都不变（用户要求"保持覆盖范围不变"）。
+		zoom.setTarget((settings.autoZoom()
+				? MinimapSettings.AUTO_BLOCKS_PER_GUI_PIXEL
+				: settings.blocksPerPixel()) / guiScale);
 		zoom.update(deltaMillis);
 
 		float yaw = player.getYRot();
@@ -326,6 +329,10 @@ public final class MinimapHud {
 				rect.x() + rect.width() / 2.0, rect.y() + rect.height() / 2.0,
 				markerSize, direction.x(), direction.y());
 
+		// 方位字母画在小地图里所有东西的最上层：路径点、生物头像、玩家箭头、切换图标之后，
+		// 免得被它们盖住（位置与地形同一套旋转，见 drawCompass）
+		drawCompass(graphics, rect, rotation);
+
 		if (!firstFrameLogged) {
 			firstFrameLogged = true;
 			LOGGER.info("小地图已改为画共享瓦片 | {}×{} GUI × 缩放 {} | 每方块={} 设备像素 覆盖={}×{} 方块 层={}",
@@ -353,13 +360,14 @@ public final class MinimapHud {
 		Font font = minecraft.font;
 		double lineHeight = font.lineHeight * TEXT_SCALE + 1;
 		double y = rect.bottom() + 3;
+		MinimapSettings.TextAlign align = settings.infoAlign();
 		for (MinimapSettings.InfoLine line : lines) {
 			String text = infoText(minecraft, player, line);
 			if (text == null || text.isEmpty()) {
 				continue;
 			}
 			double textWidth = font.width(text) * TEXT_SCALE;
-			double x = switch (settings.infoAlign()) {
+			double x = switch (align) {
 				case LEFT -> rect.x();
 				case CENTER -> rect.x() + (rect.width() - textWidth) / 2.0;
 				case RIGHT -> rect.right() - textWidth;
@@ -625,6 +633,29 @@ public final class MinimapHud {
 	}
 
 	/**
+	 * 画一个方位字：先垫一层只包住字的背景，再按缩放画亮色字。
+	 *
+	 * <p>背景色由设置给出（见 {@link MinimapSettings#compassBackgroundColor()}）；按“字实际占多大”用屏幕
+	 * 像素算好再填（不跟着矩阵缩放），所以底始终贴合字形，不会因为缩放糊出一圈锯齿。
+	 */
+	private static void drawCompassLabel(GuiGraphicsExtractor graphics, Font font, String label,
+			double x, double y, float scale, int color, int backgroundColor) {
+		double width = font.width(label) * scale;
+		double height = font.lineHeight * scale;
+		graphics.fill((int) Math.floor(x) - COMPASS_BACKGROUND_PAD,
+				(int) Math.floor(y) - COMPASS_BACKGROUND_PAD,
+				(int) Math.ceil(x + width) + COMPASS_BACKGROUND_PAD,
+				(int) Math.ceil(y + height) + COMPASS_BACKGROUND_PAD,
+				backgroundColor);
+		Matrix3x2fStack pose = graphics.pose();
+		pose.pushMatrix();
+		pose.translate((float) x, (float) y);
+		pose.scale(scale, scale);
+		graphics.text(font, label, 0, 0, color, false);
+		pose.popMatrix();
+	}
+
+	/**
 	 * 算出这一帧小地图覆盖的区块范围与页范围。
 	 *
 	 * <p>把矩形四个角按<b>逆变换</b>换算成世界坐标再取包围盒：小地图可以转，轴对齐矩形转过来后
@@ -746,7 +777,7 @@ public final class MinimapHud {
 	 * <p>变换只设一次：平移到矩形中心 → 按视角旋转 → 缩放到"方块坐标系"（{@code 1 / blocksPerGui}）
 	 * → 平移到玩家所在的世界坐标。每页只要用<b>世界方块坐标</b>画一个整页矩形即可，页本身不用重算。
 	 *
-	 * <p>未填充的像素透明，裁剪到小地图矩形用裁剪框（转过的矩形没法靠"只画可见页"裁）。
+	 * <p>未填充的像素透明，裁剪到小地图范围用裁剪框（转过的矩形没法靠"只画可见页"裁）。
 	 */
 	private void drawTerrain(GuiGraphicsExtractor graphics, ScreenRect rect, int layer,
 			double playerX, double playerZ, float rotation, double blocksPerGui) {
@@ -790,6 +821,96 @@ public final class MinimapHud {
 		graphics.disableScissor();
 	}
 
+	/** 方位字贴边时的<b>最小</b>边距（GUI 像素）：字比它大时按实际尺寸让开，见 {@link #drawCompass}。 */
+	private static final double COMPASS_EDGE_MARGIN = 4.0;
+
+	/** 四个方位的世界方向 {@code (dx, dz)}——北 = -Z、东 = +X、南 = +Z、西 = -X。 */
+	private static final double[][] COMPASS_DIRECTIONS = {
+			{0.0, -1.0}, {1.0, 0.0}, {0.0, 1.0}, {-1.0, 0.0},
+	};
+
+	/** 与 {@link #COMPASS_DIRECTIONS} 一一对应的字母（非中文语言用）。 */
+	private static final String[] COMPASS_LABELS = {"N", "E", "S", "W"};
+
+	/** 中文语言用的方位字，与 {@link #COMPASS_DIRECTIONS} 一一对应（北 / 东 / 南 / 西）。 */
+	private static final String[] COMPASS_LABELS_ZH = {"北", "东", "南", "西"};
+
+	/**
+	 * 方位字的基准缩放：实际字号再乘设置里的 {@link MinimapSettings#compassScale()}。
+	 *
+	 * <p>取 0.5 而不是信息行那种 0.7：方位字贴着边缘、还要垫背景，太大反而会糊住边缘地形。
+	 */
+	private static final float COMPASS_BASE_SCALE = 0.5F;
+
+	/** 方位字背景相对字外扩的像素：只包住字本身，不铺成一大块。 */
+	private static final int COMPASS_BACKGROUND_PAD = 1;
+
+	/**
+	 * 四个方位该写的字：当前语言以 {@code zh} 开头（{@code zh_cn} / {@code zh_tw} 等）就用"东南西北"，
+	 * 其它语言用 N / E / S / W。
+	 *
+	 * <p>按语言代码判断而不是走翻译键：汉字的宽高与单个字母不同，落点与背景都要按实际文字尺寸算。
+	 */
+	private static String[] compassLabels() {
+		String language = Minecraft.getInstance().getLanguageManager().getSelected();
+		return language != null && language.startsWith("zh") ? COMPASS_LABELS_ZH : COMPASS_LABELS;
+	}
+
+	/**
+	 * 在小地图边缘内侧画四个方位字（中文"东南西北"，其它语言 N / E / S / W）。
+	 *
+	 * <p>位置用的是与地形、路径点<b>同一个变换</b>：世界方向向量按地图旋转角投到屏幕
+	 * （{@code screen = (dx·cos - dz·sin, dx·sin + dz·cos)}，即 {@link Heading#screenDirection} 的那一套）。
+	 * 于是锁定正北（旋转角 0）时"北"恒在上方；跟随视角时地图转、方位字也跟着转到对应方向。
+	 *
+	 * <p>字本身<b>始终正着写</b>（只有落点参与旋转，字形不转），否则转过之后会倒过来认不出。
+	 * 落点贴到"按实际文字尺寸内缩后的边界"上：取方向射线与内缩矩形的交点，
+	 * 背景只包住字本身，所以字再宽也不会越出小地图。
+	 */
+	private void drawCompass(GuiGraphicsExtractor graphics, ScreenRect rect, float rotation) {
+		if (!settings.compass()) {
+			return;
+		}
+		Font font = Minecraft.getInstance().font;
+		String[] labels = compassLabels();
+		double radians = Math.toRadians(rotation);
+		double cos = Math.cos(radians);
+		double sin = Math.sin(radians);
+		double centerX = rect.x() + rect.width() / 2.0;
+		double centerY = rect.y() + rect.height() / 2.0;
+		// 字号 = 基准 × 设置倍率；字色与背景色都取自设置
+		float scale = COMPASS_BASE_SCALE * (float) settings.compassScale();
+		int color = settings.compassColor();
+		int background = settings.compassBackgroundColor();
+		// 画在最上层，但仍裁在小地图边界内：字号调到最大时也不会有半个字露到小地图外面
+		graphics.enableScissor(rect.x(), rect.y(), rect.right(), rect.bottom());
+		for (int i = 0; i < labels.length; i++) {
+			String label = labels[i];
+			double width = font.width(label) * scale;
+			double height = font.lineHeight * scale;
+			// 落点要按"这个字的实际尺寸"内缩：字以中心对准落点、背景再外扩 1px，所以边界至少要
+			// 让出 半个字宽 / 半个行高 + 1px；取不到时退回固定边距，字母的观感与以前一致
+			double halfExtentX = Math.max(COMPASS_EDGE_MARGIN, width / 2.0 + COMPASS_BACKGROUND_PAD);
+			double halfExtentY = Math.max(COMPASS_EDGE_MARGIN, height / 2.0 + COMPASS_BACKGROUND_PAD);
+			double dx = COMPASS_DIRECTIONS[i][0];
+			double dz = COMPASS_DIRECTIONS[i][1];
+			double dirX = dx * cos - dz * sin;
+			double dirY = dx * sin + dz * cos;
+			// 射线与内缩矩形的交点：两个轴各自算"到达边界所需的倍率"，取小的那个；
+			// 某轴分量为 0 时它不构成限制（用极小值兜底，避免除零）
+			double halfWidth = Math.max(0.0, rect.width() / 2.0 - halfExtentX);
+			double halfHeight = Math.max(0.0, rect.height() / 2.0 - halfExtentY);
+			double t = Math.min(halfWidth / Math.max(1.0e-6, Math.abs(dirX)),
+					halfHeight / Math.max(1.0e-6, Math.abs(dirY)));
+			double px = centerX + dirX * t;
+			double py = centerY + dirY * t;
+			// 以字中心对准落点：文本从左上角起画，所以往回挪半个字宽 / 半个行高
+			drawCompassLabel(graphics, font, label, px - width / 2.0, py - height / 2.0,
+					scale, color, background);
+		}
+		graphics.disableScissor();
+	}
+
 	/**
 	 * 叠加层：区块网格与史莱姆区块。
 	 *
@@ -813,7 +934,7 @@ public final class MinimapHud {
 				&& chunkPixels <= ChunkOverlays.MAX_GRID_CHUNK_PIXELS;
 		boolean drawSlime = settings.slimeChunks()
 				&& chunkPixels >= ChunkOverlays.MIN_SLIME_CHUNK_PIXELS
-				&& ChunkOverlays.hasSeed();
+				&& ChunkOverlays.canMarkSlimeChunks();
 		if (!drawGrid && !drawSlime) {
 			return;
 		}

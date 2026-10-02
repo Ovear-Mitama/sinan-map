@@ -27,7 +27,7 @@ public final class SinanStyle {
 	public static final int KNOB_ACTIVE = 0xFFFFFFFF;
 
 	/** 把手宽度（细一点不笨重）。 */
-	public static final int HANDLE_WIDTH = 5;
+	public static final int HANDLE_WIDTH = 3;
 
 	/** 文字：正常 / 提示 / 禁用。 */
 	public static final int TEXT = 0xFFE6E6E6;

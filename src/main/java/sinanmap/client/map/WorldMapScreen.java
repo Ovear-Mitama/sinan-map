@@ -792,8 +792,6 @@ public final class WorldMapScreen extends Screen {
 		long afterRefreshNanos = System.nanoTime();
 
 		drawTerrain(graphics);
-		// 叠加层压在地形上、又在标记之下：它是"看地形用的参考线"，不该盖住路径点与玩家标记
-		drawOverlays(graphics);
 		long afterDrawNanos = System.nanoTime();
 		// 生物雷达先画、路径点后画：<b>实体头像要在路径点之下</b>，否则头像会盖住
 		// 路径点的标记与名字。位置换算与路径点同一口径，头像在屏幕坐标系里正立，
@@ -1092,106 +1090,6 @@ public final class WorldMapScreen extends Screen {
 	private double blockTransformBaseZ() {
 		double referenceZ = (double) viewMinZ * WorldTilePages.PAGE_BLOCKS;
 		return snapToDevicePixel(originGuiZ() + (referenceZ - originWorldZ()) / blocksPerGui(), guiScale());
-	}
-
-	/**
-	 * 叠加层：区块网格与史莱姆区块。
-	 *
-	 * <p>都在<b>世界方块坐标</b>里按"一区块 16 格"画，用与地形同一套变换（见 {@link #pushBlockTransform}），
-	 * 所以拖拽与缩放时和地形严丝合缝。
-	 *
-	 * <p>网格只画<b>边界线</b>（铺底色会把地形压灰），史莱姆区块反过来，要的就是"整块都是"，所以铺底色。
-	 */
-	private void drawOverlays(GuiGraphicsExtractor graphics) {
-		if (!settings.chunkGrid() && !settings.slimeChunks()) {
-			return;
-		}
-		double perGui = blocksPerGui();
-		double chunkPixels = ChunkOverlays.CHUNK_BLOCKS / perGui;
-		boolean drawGrid = settings.chunkGrid()
-				&& chunkPixels >= ChunkOverlays.MIN_GRID_CHUNK_PIXELS
-				&& chunkPixels <= ChunkOverlays.MAX_GRID_CHUNK_PIXELS;
-		boolean drawSlime = settings.slimeChunks()
-				&& chunkPixels >= ChunkOverlays.MIN_SLIME_CHUNK_PIXELS
-				&& ChunkOverlays.hasSeed();
-		if (!drawGrid && !drawSlime) {
-			return;
-		}
-		// 可见范围按方块算：竖线要铺满上下、横线要铺满左右，都从这几个边界推出来
-		int blockMinX = (int) Math.floor(worldXAt(0));
-		int blockMaxX = (int) Math.ceil(worldXAt(width));
-		int blockMinZ = (int) Math.floor(worldZAt(0));
-		int blockMaxZ = (int) Math.ceil(worldZAt(height));
-
-		Matrix3x2fStack pose = graphics.pose();
-		pushBlockTransform(pose);
-		int lineBlocks = ChunkOverlays.lineBlocks(perGui);
-		// 史莱姆区块先铺底、网格线后画：线压在色块上，交界处才看得清
-		if (drawSlime) {
-			// 画网格时色块向里缩一条线宽：不缩的话色块会盖在线上，两处半透明叠起来，
-			// 每条边界都会出现一条明显更深的带子（用户反馈"看起来很怪、像是歪了"）
-			drawSlimeChunks(graphics, blockMinX, blockMaxX, blockMinZ, blockMaxZ,
-					drawGrid ? lineBlocks : 0);
-		}
-		if (drawGrid) {
-			drawChunkGrid(graphics, lineBlocks, blockMinX, blockMaxX, blockMinZ, blockMaxZ);
-		}
-		pose.popMatrix();
-	}
-
-	/**
-	 * 区块边界线：横线整条铺满，竖线<b>只在相邻两条横线之间分段画</b>。
-	 *
-	 * <p>不分段的话，半透明的横线与竖线会在每个交点叠两次，交点比线段更亮——整张网格上就浮现出
-	 * 一片更显眼的小方块（用户反馈"网格交点也出现同样的叠色情况"）。分段之后每个像素只被画一次。
-	 */
-	private void drawChunkGrid(GuiGraphicsExtractor graphics, int lineBlocks,
-			int blockMinX, int blockMaxX, int blockMinZ, int blockMaxZ) {
-		int color = settings.chunkGridColor();
-		int firstChunkZ = ChunkOverlays.chunkAt(blockMinZ);
-		int lastChunkZ = ChunkOverlays.chunkAt(blockMaxZ) + 1;
-		for (int chunkZ = firstChunkZ; chunkZ <= lastChunkZ; chunkZ++) {
-			int z = ChunkOverlays.chunkOrigin(chunkZ);
-			graphics.fill(blockMinX, z, blockMaxX, z + lineBlocks, color);
-		}
-		for (int chunkX = ChunkOverlays.chunkAt(blockMinX);
-				chunkX <= ChunkOverlays.chunkAt(blockMaxX) + 1; chunkX++) {
-			int x = ChunkOverlays.chunkOrigin(chunkX);
-			int cursor = blockMinZ;
-			for (int chunkZ = firstChunkZ; chunkZ <= lastChunkZ; chunkZ++) {
-				int z = ChunkOverlays.chunkOrigin(chunkZ);
-				if (z > cursor) {
-					graphics.fill(x, cursor, x + lineBlocks, z, color);
-				}
-				cursor = z + lineBlocks;
-			}
-			if (cursor < blockMaxZ) {
-				graphics.fill(x, cursor, x + lineBlocks, blockMaxZ, color);
-			}
-		}
-	}
-
-	/**
-	 * 史莱姆区块：把每个是史莱姆区块的格子铺一块半透明绿。
-	 *
-	 * @param inset 色块相对格子边界向内缩多少（方块）；只缩左上两边——右边与下边由相邻格子或
-	 *              网格线自己收口，缩多了相邻格子之间会裂出缝
-	 */
-	private void drawSlimeChunks(GuiGraphicsExtractor graphics,
-			int blockMinX, int blockMaxX, int blockMinZ, int blockMaxZ, int inset) {
-		int size = ChunkOverlays.CHUNK_BLOCKS;
-		int lastChunkX = ChunkOverlays.chunkAt(blockMaxX);
-		for (int chunkZ = ChunkOverlays.chunkAt(blockMinZ);
-				chunkZ <= ChunkOverlays.chunkAt(blockMaxZ); chunkZ++) {
-			int z = ChunkOverlays.chunkOrigin(chunkZ);
-			for (int chunkX = ChunkOverlays.chunkAt(blockMinX); chunkX <= lastChunkX; chunkX++) {
-				if (!ChunkOverlays.isSlimeChunk(chunkX, chunkZ)) {
-					continue;
-				}
-				int x = ChunkOverlays.chunkOrigin(chunkX);
-				graphics.fill(x + inset, z + inset, x + size, z + size, ChunkOverlays.SLIME_COLOR);
-			}
-		}
 	}
 
 	/** 屏幕 x → 世界坐标 x。 */

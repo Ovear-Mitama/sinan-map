@@ -46,6 +46,17 @@ public final class SinanKeyMappings {
 	private static final KeyMapping.Category CATEGORY =
 			KeyMapping.Category.register(Identifier.fromNamespaceAndPath(SinanConstants.MOD_ID, "controls"));
 
+	/**
+	 * 按住缩放键时，两次步进之间隔多少个客户端 tick。
+	 *
+	 * <p>20 tick/秒，取 {@value} → 每 0.25 秒一步：按住是"匀速拉远/拉近"，不是系统按键重复那种
+	 * "先静半秒、随后狂飙"（见 {@code register} 里缩放那一段的说明）。
+	 */
+	private static final int ZOOM_REPEAT_TICKS = 5;
+
+	/** 按住缩放键时已经过去几个 tick（松手清零），见 {@link #ZOOM_REPEAT_TICKS}。 */
+	private static int zoomRepeatTicks;
+
 	private static final KeyMapping OPEN_WORLD_MAP = new KeyMapping(
 			"key." + SinanConstants.MOD_ID + ".world_map",
 			InputConstants.Type.KEYSYM,
@@ -77,17 +88,17 @@ public final class SinanKeyMappings {
 			CATEGORY);
 
 	/**
-	 * 打开地图设置：默认 <b>O</b>（原来"小地图设置"用的就是它，那个界面删掉之后这个键就空出来了）。
+	 * 打开地图设置：默认 <b>]</b>（键盘上 } 那个键；原来"小地图设置"用的就是它，那个界面删掉之后这个键就空出来了）。
 	 *
-	 * <p>刻意<b>不留空</b>：{@code GLFW_KEY_UNKNOWN} 在原版按键界面里会显示成一个空的按键框（看着像
-	 * "默认绑的是 ]"），而且按键列表里那一行也没法一眼看出能不能用。给个默认键，要改的人自己改。
+	 * <p>刻意<b>不留空</b>：{@code GLFW_KEY_UNKNOWN} 在原版按键界面里会显示成一个空的按键框，而且按键列表
+	 * 里那一行也没法一眼看出能不能用。给个默认键，要改的人自己改。
 	 *
 	 * <p>从这里打开的设置界面没有上一层，所以背景是游戏画面（不是世界地图）。
 	 */
 	private static final KeyMapping OPEN_SETTINGS = new KeyMapping(
 			"key." + SinanConstants.MOD_ID + ".open_settings",
 			InputConstants.Type.KEYSYM,
-			GLFW.GLFW_KEY_O,
+			GLFW.GLFW_KEY_RIGHT_BRACKET,
 			CATEGORY);
 
 	private SinanKeyMappings() {
@@ -110,15 +121,18 @@ public final class SinanKeyMappings {
 					minecraft.setScreen(new WorldMapScreen(colorProvider, minimap));
 				}
 			}
-			while (MINIMAP_ZOOM_IN.consumeClick()) {
-				if (minecraft.screen == null) {
-					minimap.zoomBy(1.0 / MinimapHud.ZOOM_STEP);
-				}
-			}
-			while (MINIMAP_ZOOM_OUT.consumeClick()) {
-				if (minecraft.screen == null) {
-					minimap.zoomBy(MinimapHud.ZOOM_STEP);
-				}
+			// 缩放：按住时按<b>固定节拍</b>步进，而不是用 consumeClick()。
+			//
+			// 为什么：consumeClick() 把系统的"按键重复"也算作一次点击——按住后先静 ~0.5 秒，
+			// 之后每秒三十来次。而缩放值是<b>指数叠加</b>的（每步 ×ZOOM_STEP），目标值越跑越远、
+			// 平滑动画越追越快（动画是按"剩余距离的比例"逼近的），手感就是"一开始匀速、后面突然变快"。
+			// 固定节拍后按住的步进速率恒定，缓动只负责把每步抹平。
+			boolean zoomIn = MINIMAP_ZOOM_IN.isDown();
+			boolean zoomOut = MINIMAP_ZOOM_OUT.isDown();
+			if ((!zoomIn && !zoomOut) || minecraft.screen != null) {
+				zoomRepeatTicks = 0;
+			} else if (zoomRepeatTicks++ % ZOOM_REPEAT_TICKS == 0) {
+				minimap.zoomBy(zoomIn ? 1.0 / MinimapHud.ZOOM_STEP : MinimapHud.ZOOM_STEP);
 			}
 			while (ADD_WAYPOINT.consumeClick()) {
 				if (minecraft.screen == null) {

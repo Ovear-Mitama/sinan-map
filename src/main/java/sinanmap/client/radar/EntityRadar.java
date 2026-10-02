@@ -350,10 +350,10 @@ public final class EntityRadar {
 	 * 方块数），所以头像与地形严丝合缝地一起转、一起缩放；头像本身<b>不跟着地图转</b>（在屏幕坐标系里
 	 * 正着画），所以锁定正北时随地图转、跟随视角时也不歪，始终正立。
 	 *
-	 * <p><b>按住 TAB 时的贴边</b>：跑出小地图矩形的实体改成<b>贴到最近的边框内侧</b>（按图标半径内缩、
+	 * <p><b>按住 TAB 时的贴边</b>：跑出小地图范围的实体改成<b>贴到最近的边框内侧</b>（按图标半径内缩、
 	 * 不会被裁一半），于是"地图外还有谁、在哪个方向"一眼可见；松开 TAB 就恢复原样。
 	 *
-	 * @param scale 与 {@code MinimapHud#drawWaypoints} 的 {@code scale} 完全一致
+	 * @param scale   与 {@code MinimapHud#drawWaypoints} 的 {@code scale} 完全一致
 	 */
 	public void drawOnMinimap(GuiGraphicsExtractor graphics, ScreenRect rect, float rotation,
 			double playerX, double playerY, double playerZ, double scale) {

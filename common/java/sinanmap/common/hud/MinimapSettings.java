@@ -75,6 +75,30 @@ public final class MinimapSettings {
 	/** 默认网格颜色：白色，任何地形上都看得清。 */
 	public static final int DEFAULT_GRID_COLOR = 0x40FFFFFF;
 
+	// ---------------------------------------------------------------- 方位字母（小地图边缘的 N / E / S / W）
+
+	/** 方位字母颜色的默认值：白色，压在黑底上最醒目。 */
+	public static final int DEFAULT_COMPASS_COLOR = 0xFFFFFFFF;
+
+	/** 方位字母背景色的默认值：半透明近黑，衬得住字、又不会像纯黑那样把边缘地形压死。 */
+	public static final int DEFAULT_COMPASS_BACKGROUND_COLOR = 0xD0101014;
+
+	/**
+	 * 方位字母大小的可选挡位。
+	 *
+	 * <p>存的是<b>相对基准字号的倍率</b>（见 {@code MinimapHud} 里的方位字母基准缩放）：
+	 * 1.0 = 基准大小，大于 1 更大、小于 1 更小。做成倍率而不是像素值，改基准字号时所有挡位一起跟着走。
+	 */
+	public static final List<Double> COMPASS_SCALE_STEPS = List.of(0.6, 0.8, 1.0, 1.2, 1.5, 2.0);
+
+	/** 方位字母倍率的钳位范围（与 {@link #COMPASS_SCALE_STEPS} 一致）。 */
+	public static final double MIN_COMPASS_SCALE = 0.6;
+
+	public static final double MAX_COMPASS_SCALE = 2.0;
+
+	/** 方位字母倍率的默认值：基准大小。 */
+	public static final double DEFAULT_COMPASS_SCALE = 1.0;
+
 	// ---------------------------------------------------------------- 性能（默认全自动）
 
 	/** "自动"档：手动值取这个数时就表示"用默认"。 */
@@ -178,6 +202,7 @@ public final class MinimapSettings {
 	private boolean enabled = true;
 	private int width = 96;
 	private int height = 64;
+
 	private double blocksPerPixel = 1.0;
 	private boolean autoZoom = true;
 	private boolean rotateWithPlayer;
@@ -267,6 +292,22 @@ public final class MinimapSettings {
 
 	/** 地图上是否把史莱姆区块标出来。 */
 	private boolean slimeChunks;
+
+	/**
+	 * 是否在小地图边缘标出东南西北（N / E / S / W）。
+	 *
+	 * <p>默认开：方向是最常用的参考，开了才不至于看着小地图分不清朝向。
+	 */
+	private boolean compass = true;
+
+	/** 小地图方位字母的颜色（不透明 ARGB），默认白。 */
+	private int compassColor = DEFAULT_COMPASS_COLOR;
+
+	/** 小地图方位字母的背景色（ARGB），默认半透明近黑。 */
+	private int compassBackgroundColor = DEFAULT_COMPASS_BACKGROUND_COLOR;
+
+	/** 小地图方位字母的大小倍率（乘在基准字号上）。 */
+	private double compassScale = DEFAULT_COMPASS_SCALE;
 
 	/** 小地图下面显示哪几行信息、按什么顺序（默认只显示坐标，其余关着）。 */
 	private final List<InfoLine> infoLines = new ArrayList<>(List.of(InfoLine.COORDS));
@@ -617,6 +658,45 @@ public final class MinimapSettings {
 		this.slimeChunks = value;
 	}
 
+	/** 是否在小地图边缘标出东南西北。 */
+	public boolean compass() {
+		return compass;
+	}
+
+	public void setCompass(boolean value) {
+		this.compass = value;
+	}
+
+	/** 小地图方位字母的颜色（不透明 ARGB）。 */
+	public int compassColor() {
+		return compassColor;
+	}
+
+	public void setCompassColor(int value) {
+		this.compassColor = value;
+	}
+
+	/** 小地图方位字母的背景色（ARGB）。 */
+	public int compassBackgroundColor() {
+		return compassBackgroundColor;
+	}
+
+	public void setCompassBackgroundColor(int value) {
+		this.compassBackgroundColor = value;
+	}
+
+	/** 小地图方位字母的大小倍率（1.0 = 基准大小）。 */
+	public double compassScale() {
+		return compassScale;
+	}
+
+	public void setCompassScale(double value) {
+		if (!Double.isFinite(value)) {
+			throw new IllegalArgumentException("缩放必须是有限值");
+		}
+		this.compassScale = Math.clamp(value, MIN_COMPASS_SCALE, MAX_COMPASS_SCALE);
+	}
+
 	/** 小地图下面显示的信息行（只读视图，顺序即显示顺序）。 */
 	public List<InfoLine> infoLines() {
 		return List.copyOf(infoLines);
@@ -827,6 +907,10 @@ public final class MinimapSettings {
 		this.chunkGrid = other.chunkGrid;
 		this.chunkGridColor = other.chunkGridColor;
 		this.slimeChunks = other.slimeChunks;
+		this.compass = other.compass;
+		this.compassColor = other.compassColor;
+		this.compassBackgroundColor = other.compassBackgroundColor;
+		this.compassScale = other.compassScale;
 		this.infoLines.clear();
 		this.infoLines.addAll(other.infoLines);
 		this.infoAlign = other.infoAlign;
