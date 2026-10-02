@@ -29,6 +29,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.SpawnEggItem;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
 
 import sinanmap.common.SinanConstants;
 import sinanmap.common.hud.MinimapSettings;
@@ -562,10 +563,15 @@ public final class EntityRadar {
 	 */
 	private static int backdropColorOf(Entity entity) {
 		var level = entity.level();
+		// 取"这一列在地图上看得见的那一格"。地图按 WORLD_SURFACE（最上面那个非空气方块）取色，
+		// 箭头必须跟同一个口径：生物钻到地表之下时（洞穴、山坡背面），它脚下是石头、而地图上那一格
+		// 是雪/草，按生物自己那一格取色就会"白地图上画白箭头"。
+		BlockPos top = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, entity.blockPosition());
 		BlockState surface = null;
 		int base = 0;
+		// 高度图给的是"地表之上那一格"，不同口径下可能已经就是地表，所以往下扫几格取第一个非空气
 		for (int i = 0; i <= SURFACE_SCAN_DEPTH; i++) {
-			backdropPos.set(entity.getBlockX(), entity.getBlockY() - i, entity.getBlockZ());
+			backdropPos.set(top.getX(), top.getY() - i, top.getZ());
 			BlockState state = level.getBlockState(backdropPos);
 			if (!state.isAir()) {
 				surface = state;
@@ -581,20 +587,22 @@ public final class EntityRadar {
 		int g = (int) (((base >> 8) & 0xFF) * dim);
 		int b = (int) ((base & 0xFF) * dim);
 		int argb = 0xFF000000 | (r << 16) | (g << 8) | b;
-		// 【临时诊断】定位"白天雪地仍画白箭头"用，定位后删除
-		if (diagLeft > 0 && System.nanoTime() - diagLastNanos > 200_000_000L) {
+		// 【临时诊断】定位"白天雪地仍画白箭头"用，定位后删除：只在"颜色或判定"变化时打一条
+		String diagKey = Integer.toHexString(base) + "|" + isBrightColor(argb);
+		if (diagLeft > 0 && !diagKey.equals(diagLastKey)) {
 			diagLeft--;
-			diagLastNanos = System.nanoTime();
-			LOGGER.info("高度指示诊断 | 实体={} 方块={} 地图色=#{} 天空衰减={} dim={} 结果=#{} 判深={}",
-					entity.getType(), surface, Integer.toHexString(base), level.getSkyDarken(), dim,
-					Integer.toHexString(argb), isBrightColor(argb));
+			diagLastKey = diagKey;
+			LOGGER.info("高度指示诊断 | 实体={} 实体坐标={}/{}/{} 地表坐标={}/{}/{} 地表方块={} 地图色=#{} 天空衰减={} dim={} 结果=#{} 判深={}",
+					entity.getType(), entity.getBlockX(), entity.getBlockY(), entity.getBlockZ(),
+					top.getX(), top.getY(), top.getZ(), surface, Integer.toHexString(base),
+					level.getSkyDarken(), dim, Integer.toHexString(argb), isBrightColor(argb));
 		}
 		return argb;
 	}
 
 	// 【临时诊断】见 backdropColorOf，定位后删除
-	private static int diagLeft = 40;
-	private static long diagLastNanos;
+	private static int diagLeft = 30;
+	private static String diagLastKey = "";
 
 	/** 见 {@link #drawHeightIndicator}：按亮度判"亮地形"（整数运算，无浮点）。 */
 	private static boolean isBrightColor(int argb) {

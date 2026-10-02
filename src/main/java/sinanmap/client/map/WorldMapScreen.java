@@ -2372,9 +2372,16 @@ public final class WorldMapScreen extends Screen {
 			// 叶页一直喂到 2 档为止（4 档在上面就整页跳过了）：2 档的粗页有相当一部分像素是"从叶页降采样"
 			// （纯内存读），而叶页不喂就永远没有降采样来源，只能回世界采样——实测就是这样："降采样=0px、
 			// 回落 39 万像素/秒（312ms/秒）"，档=2 因此比设计慢一大截。以前这里按 coarse 整段挡住，是怕
-			// 两套推进顺序在同一帧"哪儿都在长"；现在两个档位共用同一套"由中心向外"，不会再出现两种走向。
+			// 两套推进顺序在同一帧"哪儿都在长"；现在两个档位共用同一套"一列一列扫"，不会再出现两种走向。
+			// 【诊断】"暖预算"是每帧全局一份、先到先得（见 ClientChunkColorProvider#beginWarm）：别的界面
+			// （小地图 HUD、雷达）先把这一帧的额度花光的话，世界地图这边就一块都问不动——"每秒只推进几十块"
+			// 正是它的症状。数一下被它挡住的次数，"很慢"的账才能算清。
+			boolean warmSpent = colorProvider.isWarmSpent();
+			if (warmSpent) {
+				warmSpentSkips++;
+			}
 			if (terrainTier != WorldTilePages.COARSE_TIER_4 && filledPages < maxFillingPerFrame
-					&& !colorProvider.isWarmSpent() && tiles.hasWork(page)
+					&& !warmSpent && tiles.hasWork(page)
 					&& (tiles.started(page) || inFlight < maxFillingPages)) {
 				if (tiles.fillSome(page, chunksPerVisit)) {
 					filledPages++;
@@ -2416,6 +2423,9 @@ public final class WorldMapScreen extends Screen {
 	private long stepNanosSum;
 	private long uploadNanosSum;
 	private long fillViewNanosSum;
+
+	/** 本秒有多少次"页本该被喂、却被每帧那份暖预算挡住"（诊断，见 fillView）。 */
+	private int warmSpentSkips;
 
 	/** 【诊断计量】"铺满一屏"正在计时的档位（1/2/4）；0 表示当前没在计时。 */
 	private int screenFillTier;
@@ -2818,6 +2828,7 @@ public final class WorldMapScreen extends Screen {
 		stepNanosSum = 0;
 		uploadNanosSum = 0;
 		fillViewNanosSum = 0;
+		warmSpentSkips = 0;
 		tiles.resetFrameCounters();
 		if (pages == 0) {
 			return;
@@ -2854,10 +2865,10 @@ public final class WorldMapScreen extends Screen {
 		}
 		LOGGER.info("世界地图填充 | 视野内页={} | 档={} 方块每像素 粗页模式={} 可见粗页={} 已建粗页={}"
 						+ " | 粗页明细 未建有数据={} 未建无数据={} 负表={} 已建未铺完={}"
-						+ " | 地形块={} 空洞={} 还没问={} | 夜色={} 层={}",
+						+ " | 地形块={} 空洞={} 还没问={} | 本秒暖预算停={} | 夜色={} 层={}",
 				pages, terrainTier, coarseMode(), coarseVisible, tiles.coarseCount(terrainTier),
 				missingWithData, missingNoData, coarseNoData.size(), builtUnfinished,
-				terrain, holes, undecided, nightAlpha(), describeLayer(currentLayer));
+				terrain, holes, undecided, warmSpentSkips, nightAlpha(), describeLayer(currentLayer));
 	}
 
 	/**

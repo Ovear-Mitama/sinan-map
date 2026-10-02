@@ -139,6 +139,14 @@ final class CoarseTileCache {
 		/** 上一次上屏的时刻（0 = 建页那次整张上传之后还没传过），见 {@link #uploadCoarse}。 */
 		private long lastUploadNanos;
 
+		/**
+		 * 游标这一遍已经走到末尾（把"现在能填的"都填过了）。
+		 *
+		 * <p>上屏的时机就是它：一整遍扫完才把这一页传上去，而不是"填一点传一点"。后者会让同一片
+		 * 区域反复只显影几十个像素，看起来是"扫了很多次才扫完"。
+		 */
+		private boolean sweepDone;
+
 		private CoarsePage(TileVariants textures, int layer, int pixelHeight, int blocksPerPixel,
 				int pageX, int pageZ) {
 			this.textures = textures;
@@ -161,8 +169,8 @@ final class CoarseTileCache {
 	}
 
 	/**
-	 * 粗页填充顺序（每档一张）：<b>按"小块"从页中心向外</b>，走向与理由写在
-	 * {@link TileSweepOrder#coarseCenterOut} 那里——页内的推进顺序全工程只此一处。
+	 * 粗页填充顺序（每档一张）：<b>按区块一列一列地扫</b>，走向与理由写在
+	 * {@link TileSweepOrder#coarseColumns} 那里——页内的推进顺序全工程只此一处。
 	 */
 	private static final int[] COARSE_SWEEP_2 = buildCoarseSweep(WorldTilePages.COARSE_TIER_2);
 	private static final int[] COARSE_SWEEP_4 = buildCoarseSweep(WorldTilePages.COARSE_TIER_4);
@@ -174,7 +182,7 @@ final class CoarseTileCache {
 
 	/** 生成某一档的顺序表：把参数折成"贴图边长 / 每区块像素 / 每边区块数"交给 {@link TileSweepOrder}。 */
 	private static int[] buildCoarseSweep(int blocksPerPixel) {
-		return TileSweepOrder.coarseCenterOut(
+		return TileSweepOrder.coarseColumns(
 				WorldTilePages.coarseSize(blocksPerPixel),
 				tierPixelsPerChunk(blocksPerPixel),
 				// 一张粗页管 COARSE_PACK×COARSE_PACK 张叶页格位，区块数也跟着乘上来
@@ -435,6 +443,8 @@ final class CoarseTileCache {
 				// 那里抢走。顺手判定"这一轮有没有进展"：一个都没填上就说明剩下的全是"还没定论"，
 				// 于是不再算"正在加载"——否则圈会一直转。
 				page.stalled = page.sweepPainted == 0;
+				// 允许上屏：这一遍能填的都填上了，整页一起显影（见 CoarsePage#sweepDone）
+				page.sweepDone = true;
 				page.sweepPainted = 0;
 				page.retryAtNanos = System.nanoTime() + COARSE_RETRY_NANOS;
 			}
@@ -643,11 +653,13 @@ final class CoarseTileCache {
 	 * <p><b>只传当前要画的那一张</b>：以前两张无条件都传等于上传带宽白翻一倍。没传的那张不标"传过"，
 	 * 等天色需要时再补传，结果一致。
 	 *
-	 * <p><b>还要限"多久传一次"。</b>粗页一屏只有几十张，而每张都得<b>整张</b>重传（2 档一张就有 1 MB）：
-	 * 填一次就传一次的话，一屏粗页会以几十个像素为单位一格一格显影——这正是用户看到的"撕裂感很强"
-	 * （实测每秒 183~211 次粗页上传、回落到世界采样 39~95 万像素）。改成两次之间至少隔
-	 * {@value #COARSE_UPLOAD_INTERVAL_NANOS} 纳秒：一次至少显影 80 毫秒的填充量，成片出现。
-	 * 页<b>填完</b>时不受这条限制，最后一块立刻上屏。
+	 * <p><b>上屏时机 = "一整遍扫完"。</b>粗页一屏只有几十张，而每张都得<b>整张</b>重传（2 档一张就有 1 MB）：
+	 * 填一点传一点的话，一屏粗页会以几十个像素为单位一格一格显影（实测每秒 183~211 次上传）——
+	 * 于是同一片区域反复只显影几十个像素、扫了很多次才扫完。改成"游标走完一遍、把这一遍
+	 * 能填的都填上了才传"：每页一次显影一批，扫的顺序就是看得见的顺序（一列列铺开）。
+	 *
+	 * <p>另加一个 {@value #COARSE_UPLOAD_INTERVAL_NANOS} 纳秒的下限，防止"页小、扫一圈很快"时连着传。
+	 * 页<b>填完</b>时不受任何限制，最后一块立刻上屏。
 	 *
 	 * @return 有没有真的传过东西
 	 */
@@ -657,11 +669,16 @@ final class CoarseTileCache {
 		if (page == null) {
 			return false;
 		}
-		// 还在铺、而且刚传过：先攒着（建页时那次整张上传不算，那时 lastUploadNanos 还是 0）
 		long nowNanos = System.nanoTime();
-		if (page.remaining > 0 && page.lastUploadNanos != 0L
-				&& nowNanos - page.lastUploadNanos < COARSE_UPLOAD_INTERVAL_NANOS) {
-			return false;
+		if (page.remaining > 0) {
+			// 还没填完：得等这一遍扫完（见 CoarsePage#sweepDone），而且别传得太密
+			if (!page.sweepDone) {
+				return false;
+			}
+			if (page.lastUploadNanos != 0L
+					&& nowNanos - page.lastUploadNanos < COARSE_UPLOAD_INTERVAL_NANOS) {
+				return false;
+			}
 		}
 		boolean uploaded = false;
 		if (wantDay && page.dirtyDay) {
@@ -675,8 +692,9 @@ final class CoarseTileCache {
 			uploaded = true;
 		}
 		if (uploaded) {
-			// 记下这次上屏的时刻：下一次要再隔一个间隔（见本方法说明）
+			// 记下这次上屏的时刻，并把"这一遍扫完了"用掉：下一次要等下一遍扫完（见本方法说明）
 			page.lastUploadNanos = nowNanos;
+			page.sweepDone = false;
 		}
 		return uploaded;
 	}

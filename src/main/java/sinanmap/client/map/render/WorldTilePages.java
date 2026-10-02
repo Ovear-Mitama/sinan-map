@@ -495,10 +495,10 @@ public final class WorldTilePages implements Closeable {
 	/**
 	 * 页内推进顺序表（问新块、补画、未探明重试共用同一张）。
 	 *
-	 * <p>走向与"为什么不跟着朝向走"都写在 {@link TileSweepOrder#pageCenterOut} 那里——
+	 * <p>走向与"为什么不再从中心向外"都写在 {@link TileSweepOrder#pageColumns} 那里——
 	 * 全工程的页内推进顺序只此一处，别再各写一套。
 	 */
-	private static final int[] SWEEP_ORDER = TileSweepOrder.pageCenterOut(PAGE_CHUNKS);
+	private static final int[] SWEEP_ORDER = TileSweepOrder.pageColumns(PAGE_CHUNKS);
 
 	/**
 	 * 一次访问里，最多往下问几块新的。
