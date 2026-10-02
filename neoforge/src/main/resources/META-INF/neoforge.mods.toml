@@ -1,0 +1,25 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "All-Rights-Reserved"
+
+[[mods]]
+modId = "sinanmap"
+version = "${version}"
+displayName = "Sinan Map"
+description = '''司南地图：客户端小地图、全屏地图与路径点系统。'''
+logoFile = "assets/sinanmap/icon.png"
+authors = "Sinan Map Contributors"
+
+[[dependencies.sinanmap]]
+modId = "neoforge"
+type = "required"
+versionRange = "[26.1.2,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.sinanmap]]
+modId = "minecraft"
+type = "required"
+versionRange = "[26.1.2,)"
+ordering = "NONE"
+side = "CLIENT"

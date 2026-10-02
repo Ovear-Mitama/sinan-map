@@ -1,0 +1,13 @@
+pluginManagement {
+	repositories {
+		maven {
+			name = 'NeoForged'
+			url = 'https://maven.neoforged.net/releases/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
+
+// NeoForge 工程为独立构建，与根目录的 Fabric 工程互不依赖
+rootProject.name = 'sinanmap-neoforge'

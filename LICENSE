@@ -1,0 +1,127 @@
+司南地图（Sinan Map）
+
+版权所有 (C) 2026 Mitama。保留所有权利。
+Copyright (C) 2026 Mitama. All rights reserved.
+
+作者 / Author: Mitama
+项目主页 / Project home: https://github.com/Ovear-Mitama/sinan-map
+
+本项目采用"保留所有权利"（All Rights Reserved，ARR）。
+
+未经版权所有者事先书面许可，任何人不得以任何形式复制、修改、翻译、改编、分发、
+再许可、出售本项目的源代码、编译产物（jar）或其他任何内容，亦不得将其全部或部分
+并入其他作品。
+
+This project is licensed under "All Rights Reserved" (ARR).
+
+No part of this project — including its source code, compiled artifacts (jar files)
+and any other content — may be copied, modified, translated, adapted, distributed,
+sublicensed, sold, or incorporated in whole or in part into other works, in any form,
+without the prior written permission of the copyright holder.
+
+以下各条是上述保留的例外：在"保留所有权利"的前提下，作者额外授予下列许可。行使这些
+许可无需事先申请、无需付费。
+The articles below are exceptions to the reservation above: the author grants the following
+additional permissions. Exercising them requires no prior application and no fee.
+
+## 一、允许（无需申请无需付费） / 1. Permitted (no application, no fee)
+
+1. 下载、安装、游玩本作品，制作备份与副本供自己使用。
+2. 以【未经修改】的形式将本作品随整合包一同分发，**包括商业整合包与盈利性服务器**。
+3. 在服务器中使用本作品，用于直播、录播、图文等内容创作，并就此获得收益。
+4. 开发与发布**独立附加组件**：仅通过本作品的公开接口（公开 API、事件、数据包、资源包）
+   依赖本作品、不包含本作品任何源代码与资源者，可自选许可（含闭源与商业许可）。
+5. 制作与发布资源包、配置文件、教程与文档。
+6. 自由使用、修改、再分发 `assets/sinanmap/` 目录下的贴图与图标素材（详见第四条）。
+
+1. Download, install and play the Work; make backups and copies for your own use.
+2. Distribute the Work, [unmodified], as part of a modpack, **including commercial modpacks
+   and monetized servers**.
+3. Use the Work on servers and in live streams, recorded videos and written or illustrated
+   content, and earn revenue from doing so.
+4. Develop and publish **independent Add-ons** that depend on the Work solely through its
+   public interfaces (public API, events, datapacks, resource packs) and contain none of the
+   Work's source code or assets; you may license them however you wish, including
+   proprietary and commercial licenses.
+5. Create and publish resource packs, configuration files, tutorials and documentation.
+6. Freely use, modify and redistribute the textures and icons under `assets/sinanmap/`
+   (see Article 4).
+
+## 二、需事先取得书面许可 / 2. Requiring Prior Written Permission
+
+以本作品**本身为卖点**的商业性使用，需事先取得作者的书面许可，例如：把本作品放在
+付费墙后提供、以"含本作品的付费服务"作为主要卖点、将本作品作为商品出售。
+申请方式：通过项目主页所列联系渠道说明使用场景、分发范围与收费方式。
+
+Commercial use where the Work **itself is the selling point** requires the author's prior
+written permission — for example offering the Work behind a paywall, selling a paid service
+whose main selling point is this Work, or selling the Work as a product. Requests may be
+made through the contact channel listed on the project home page, stating the intended use,
+the scope of distribution and the charging model.
+
+## 三、始终禁止 / 3. Always Prohibited
+
+1. 修改、摘录、改名、重新打包本作品后分发（含"补丁 jar""修改版 jar"），或把本作品的
+   源代码或其他资源（第四条的美术资源除外）并入自己的项目后分发；
+2. 移除、遮挡或更改本作品的版权声明、许可声明与署名；
+3. 冒用官方名义，或明示或暗示作者为你的作品提供担保、背书或存在合作关系。
+
+1. Distributing modified, excerpted, renamed or repackaged versions of the Work (including
+   "patch jars" and "modified jars"), or distributing the Work's source code or other
+   resources (other than the art assets in Article 4) incorporated into your own project.
+2. Removing, obscuring or altering the copyright, license or attribution notices.
+3. Passing off as official, or stating or implying that the author sponsors, endorses or is
+   affiliated with your work.
+
+## 四、美术资源 / 4. Art Assets
+
+`assets/sinanmap/` 目录下的贴图与图标素材**不作限制**：可自由使用、修改、再分发，包括
+商业性使用，无需署名。其中来源于 Minecraft 的原始贴图、模型与名称仍归 Mojang Studios
+及其关联方所有，不属于本授权范围。
+
+The textures and icons under `assets/sinanmap/` are **not restricted**: you may freely use,
+modify and redistribute them, including commercially, with no attribution required. Original
+Minecraft textures, models and names remain the property of Mojang Studios and its
+affiliates and are outside the scope of this permission.
+
+## 五、本地修改（含自行添加翻译） / 5. Local Modifications (Including Your Own Translations)
+
+**允许**：为自己使用而修改本作品——包括替换 jar 内的语言文件、配置文件、贴图等，以便在
+本作品尚未支持的语言下使用它。此类修改仅供你自己（或你自己的服务器内部）使用，无需告知
+作者，也无需取得任何许可。
+
+**想分享翻译怎么办**：请以**资源包／语言包**的形式发布（这属于第一条允许的"资源包"，
+它不修改本作品本体，因此任何人都能装）；**不得分发内含你所做修改的本作品 jar**
+（属于第三条禁止的"修改版 jar"）。
+
+**Permitted**: modifying the Work for your own use — including replacing language files,
+configuration files or textures inside the jar — so that you can use the Work in a language
+it does not yet support. Such modifications are for your own use (or for internal use on your
+own server); no notice to or permission from the author is required.
+
+**How to share a translation**: publish it as a **resource pack / language pack** (this is
+the "resource pack" permitted in Article 1 and does not modify the Work itself, so anyone can
+install it). You may **not** distribute a jar of the Work containing your modifications (that
+is the "modified jar" prohibited by Article 3).
+
+## 六、署名 / 6. Attribution
+
+除下述一种情形外，本作品**不要求任何署名**：在整合包、服务器、视频、图文、附加组件等场合
+使用或展示本作品，均无需注明作者或来源，自愿注明当然欢迎。
+
+**唯一的署名要求**：当你复制、移植或实质性参考了本作品的**源代码**，或你的作品依赖本作品
+的源代码时，请在该作品的相关位置保留本作品的原始版权与许可声明，并注明：
+
+    司南地图（Sinan Map）· 作者 Mitama
+    https://github.com/Ovear-Mitama/sinan-map
+
+**No attribution is required** for this Work except in the single case below: using or
+displaying the Work in modpacks, on servers, in videos, articles or Add-ons requires no
+credit to the author or the source (voluntary credit is of course welcome).
+
+**The only attribution requirement**: if you copy, port or substantially reference the Work's
+**source code**, or if your work depends on the Work's source code, retain the original
+copyright and license notices of the Work in a relevant place of that work and state:
+
+    Sinan Map (司南地图) · by Mitama
+    https://github.com/Ovear-Mitama/sinan-map

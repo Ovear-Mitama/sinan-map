@@ -1,0 +1,111 @@
+plugins {
+	// Loom 版本固定为发布版，避免 SNAPSHOT 引入不可复现的构建
+	id 'net.fabricmc.fabric-loom' version '1.18.2'
+	id 'maven-publish'
+}
+
+// 版本与依赖版本统一写在 gradle.properties，便于对照 https://fabricmc.net/develop 更新
+def minecraftVersion = project.minecraft_version
+def loaderVersion = project.loader_version
+def fabricApiVersion = project.fabric_api_version
+def junitVersion = project.junit_version
+def modmenuVersion = project.modmenu_version
+def waystonesVersion = project.waystones_version
+def balmVersion = project.balm_version
+def shogiVersion = project.shogi_version
+
+repositories {
+	mavenCentral()
+	maven { url = 'https://maven.terraformersmc.com/releases/' }
+	// 传送石碑兼容用的那几个依赖（Modrinth 官方 Maven）
+	maven { url = 'https://api.modrinth.com/maven' }
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${minecraftVersion}"
+	implementation "net.fabricmc:fabric-loader:${loaderVersion}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
+	implementation "com.terraformersmc:modmenu:${modmenuVersion}"
+	testImplementation platform("org.junit:junit-bom:${junitVersion}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+	// 「传送石碑」兼容：只在编译期引用它的 API，运行时有没有装由玩家决定。
+	// 用 mod 版配置（Loom 会把 jar 重映射到开发用命名），普通 compileOnly 会拿到混淆名、编译不过。
+	compileOnly "maven.modrinth:waystones:${waystonesVersion}"
+	compileOnly "maven.modrinth:balm:${balmVersion}"
+	compileOnly "maven.modrinth:shogi:${shogiVersion}"
+	// 开发环境里装上，方便直接进游戏验证"自动添加石碑路径点"。
+	// Shogi 是 Waystones 声明的硬依赖，少一个整个加载都会失败
+	localRuntime "maven.modrinth:waystones:${waystonesVersion}"
+	localRuntime "maven.modrinth:balm:${balmVersion}"
+	localRuntime "maven.modrinth:shogi:${shogiVersion}"
+}
+
+sourceSets {
+	main {
+		// 与 NeoForge 工程共享的纯逻辑源码
+		java.srcDir 'common/java'
+	}
+	test {
+		java.srcDir 'common/test/java'
+	}
+}
+
+loom {
+	mods {
+		"sinanmap" {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+java {
+	// Loom 1.18.2 要求 Gradle 本身运行在 JDK 25 上，因此这里只需声明字节码目标版本
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+tasks.test {
+	useJUnitPlatform()
+}
+
+processResources {
+	def modVersion = project.version
+	inputs.property 'version', modVersion
+
+	filesMatching('fabric.mod.json') {
+		expand 'version': modVersion
+	}
+}
+
+jar {
+	// rename 闭包在执行期运行，名字要在配置期取好，否则配置缓存会报错
+	def jarNameSuffix = project.name
+	from('LICENSE') {
+		rename { "${it}_${jarNameSuffix}" }
+	}
+}
+
+// configure the maven publication
+publishing {
+	publications {
+		create('mavenJava', MavenPublication) {
+			from components.java
+		}
+	}
+
+	// See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
+	repositories {
+		// Add repositories to publish to here.
+		// Notice: This block does NOT have the same function as the block in the top level.
+		// The repositories here will be used for publishing your artifact, not for
+		// retrieving dependencies.
+	}
+}

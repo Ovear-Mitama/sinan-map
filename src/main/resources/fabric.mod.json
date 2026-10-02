@@ -1,0 +1,27 @@
+{
+	"schemaVersion": 1,
+	"id": "sinanmap",
+	"version": "${version}",
+	"name": "Sinan Map",
+	"description": "司南地图：客户端小地图、全屏地图与路径点系统。",
+	"authors": [
+		"Sinan Map Contributors"
+	],
+	"license": "All-Rights-Reserved",
+	"icon": "assets/sinanmap/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"sinanmap.SinanFabric"
+		],
+		"client": [
+			"sinanmap.SinanFabric"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
