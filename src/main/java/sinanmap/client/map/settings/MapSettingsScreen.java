@@ -173,8 +173,12 @@ public final class MapSettingsScreen extends Screen {
 
 	private final int[] cursor = new int[2];
 
-	/** 性能页"线程数"那两挡：最左是自动，其余是 1~8 条。 */
-	private static final List<Integer> AUTO_THREAD_STEPS =
+	/** 读盘线程那挡：最左是自动，其余按"核数感"往上走，到 {@link MinimapSettings#MAX_PREFETCH_THREADS}。 */
+	private static final List<Integer> PREFETCH_THREAD_STEPS = List.of(
+			MinimapSettings.AUTO, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64);
+
+	/** 洞穴扫描线程那挡：最左是自动，其余 1~{@link MinimapSettings#MAX_CAVE_SCAN_THREADS} 条。 */
+	private static final List<Integer> CAVE_THREAD_STEPS =
 			List.of(MinimapSettings.AUTO, 1, 2, 3, 4, 5, 6, 7, 8);
 
 	/** 其余性能项的挡位：最左一律是"自动"，往右依次变大。 */
@@ -764,7 +768,7 @@ public final class MapSettingsScreen extends Screen {
 		// "自动"（= 不限制，按缩放自动选档）放在最左，其后才是固定档
 		add(new SinanCycleButton<>(0, 0, columnWidth, ROW_HEIGHT,
 						Component.translatable("screen.sinanmap.map_settings.detail_tier"),
-						List.of(MinimapSettings.MAX_DETAIL_TIER, 1, 2, 3), settings.mapDetailTier(),
+						List.of(MinimapSettings.MAX_DETAIL_TIER, 1, 4), settings.mapDetailTier(),
 						MapSettingsScreen::detailName, settings::setMapDetailTier),
 				"screen.sinanmap.map_settings.tip.detail_tier");
 	}
@@ -776,12 +780,13 @@ public final class MapSettingsScreen extends Screen {
 	 * 范围取各常量已有的安全区间（见 {@link MinimapSettings}）：调大更吃 CPU/内存，调小更省。
 	 */
 	private void buildPerformancePage() {
-		add(stepSlider(AUTO_THREAD_STEPS, settings.prefetchThreads(),
+		add(stepSlider(PREFETCH_THREAD_STEPS, settings.prefetchThreads(),
 						Component.translatable("screen.sinanmap.map_settings.perf.prefetch_threads"),
-						value -> numberOrAuto(value, MinimapSettings.DEFAULT_PREFETCH_THREADS).getString(),
+						// "自动"那一档显示的就是实际会用的条数（跟着核数算，见 MinimapSettings#autoPrefetchThreads）
+						value -> numberOrAuto(value, MinimapSettings.autoPrefetchThreads()).getString(),
 						settings::setPrefetchThreads),
 				"screen.sinanmap.map_settings.tip.prefetch_threads");
-		add(stepSlider(AUTO_THREAD_STEPS, settings.caveScanThreads(),
+		add(stepSlider(CAVE_THREAD_STEPS, settings.caveScanThreads(),
 						Component.translatable("screen.sinanmap.map_settings.perf.cave_threads"),
 						value -> numberOrAuto(value, MinimapSettings.DEFAULT_CAVE_SCAN_THREADS).getString(),
 						settings::setCaveScanThreads),

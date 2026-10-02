@@ -2353,11 +2353,11 @@ public final class WorldMapScreen extends Screen {
 		for (long cell : fillOrder) {
 			int pageX = (int) (cell >> 32);
 			int pageZ = (int) cell;
-			// 最粗一档（4 方块/像素）时叶页整套停用：那时一屏 2300 多个页格位，叶页（一页 2 MB）纯属负担，
-			// 它只是给"缩回 2 档"备的降采样来源，而 2 档粗页填充在叶页缺失时会回落去世界采样
-			// （见 CoarseTileCache#fillCoarse），照样出图。停用后少一类每秒在动的东西、显存也不再供两套。
-			// 2 档仍照常建叶页（半数粗像素能从叶页直接降采样，出图最快），缩回 2 档时按需重建。
-			if (coarse && terrainTier == WorldTilePages.COARSE_TIER_4) {
+			// 最粗一档（{@value WorldTilePages#COARSE_TIER_8} 方块/像素）时叶页整套停用：那时一屏上千个页格位，
+			// 叶页（一页 2 MB）纯属负担，它只是给"缩回 4 档"备的降采样来源，而 4 档粗页填充在叶页缺失时会
+			// 回落去世界采样（见 CoarseTileCache#fillCoarse），照样出图。停用后少一类每秒在动的东西、
+			// 显存也不再供两套。4 档仍照常建叶页（粗像素能从叶页直接降采样，出图最快），缩回 4 档时按需重建。
+			if (coarse && terrainTier == WorldTilePages.COARSE_TIER_8) {
 				continue;
 			}
 			if (!mayHaveData(pageX, pageZ) && tiles.find(currentLayer, pageX, pageZ) == null) {
@@ -2369,9 +2369,9 @@ public final class WorldMapScreen extends Screen {
 			long p0 = System.nanoTime();
 			TilePage page = tiles.page(currentLayer, pageX, pageZ);
 			long p1 = System.nanoTime();
-			// 叶页一直喂到 2 档为止（4 档在上面就整页跳过了）：2 档的粗页有相当一部分像素是"从叶页降采样"
+			// 叶页一直喂到 4 档为止（8 档在上面就整页跳过了）：4 档的粗页有相当一部分像素是"从叶页降采样"
 			// （纯内存读），而叶页不喂就永远没有降采样来源，只能回世界采样——实测就是这样："降采样=0px、
-			// 回落 39 万像素/秒（312ms/秒）"，档=2 因此比设计慢一大截。以前这里按 coarse 整段挡住，是怕
+			// 回落 39 万像素/秒（312ms/秒）"，中间那档因此比设计慢一大截。以前这里按 coarse 整段挡住，是怕
 			// 两套推进顺序在同一帧"哪儿都在长"；现在两个档位共用同一套"一列一列扫"，不会再出现两种走向。
 			// 【诊断】"暖预算"是每帧全局一份、先到先得（见 ClientChunkColorProvider#beginWarm）：别的界面
 			// （小地图 HUD、雷达）先把这一帧的额度花光的话，世界地图这边就一块都问不动——"每秒只推进几十块"
@@ -2380,7 +2380,7 @@ public final class WorldMapScreen extends Screen {
 			if (warmSpent) {
 				warmSpentSkips++;
 			}
-			if (terrainTier != WorldTilePages.COARSE_TIER_4 && filledPages < maxFillingPerFrame
+			if (terrainTier != WorldTilePages.COARSE_TIER_8 && filledPages < maxFillingPerFrame
 					&& !warmSpent && tiles.hasWork(page)
 					&& (tiles.started(page) || inFlight < maxFillingPages)) {
 				if (tiles.fillSome(page, chunksPerVisit)) {
@@ -2519,27 +2519,27 @@ public final class WorldMapScreen extends Screen {
 	}
 
 	/**
-	 * 档位阈值：每<b>设备</b>像素多少个方块时跨到下一档。相邻两档的贴图像素密度只差 2 倍。
+	 * 档位阈值：每<b>设备</b>像素多少个方块时跨到下一档。三档是 1 / 4 / 8 方块每像素。
 	 *
-	 * <p>三档：{@code < 2} → 叶页（1 方块/像素）；{@code 2 ≤ x < 6} → 2 档（2 方块/像素，256×256）；
-	 * {@code ≥ 6} → 4 档（4 方块/像素，128×128）。
+	 * <p>三档：{@code < 4} → 叶页（1 方块/像素）；{@code 4 ≤ x < 12} → 4 档（4 方块/像素，256×256）；
+	 * {@code ≥ 12} → 8 档（8 方块/像素，128×128）。
 	 *
-	 * <p><b>4 档阈值从 4 抬到 6</b>：按 4 判时刚缩到"每设备像素 4 方块"就切档，2 档贴图才放大 2 倍就换了。
-	 * 抬到 6 后 2 档用到放大 3 倍——代价是 {@code 4 ≤ x < 6} 这一段略软，收益是换档次数更少（正是要的效果）。
+	 * <p><b>为什么 8 档阈值取 12</b>：按 8 判时刚缩到"每设备像素 8 方块"就切档，4 档贴图才放大 2 倍就换了。
+	 * 取 12 后 4 档用到放大 3 倍——代价是 {@code 8 ≤ x < 12} 这一段略软，收益是换档次数更少（正是要的效果）。
 	 * 回切阈值跟着这个常量走（{@code × }{@value #TIER_HYSTERESIS}），见 {@link #updateTerrainTier}。
 	 *
 	 * <p><b>为什么是"设备像素"而不是"GUI 像素"</b>：档位成立的条件是"贴图一个像素正好落在屏幕一个
 	 * 物理像素上"，而 {@link #zoom} 的内部单位本来就是"每设备像素多少方块"。用 {@link #blocksPerGui()}
 	 * 判会把阈值放大 {@code guiScale} 倍——高 DPI（guiScale=2）下等于提前一倍切档，即"还没缩多少就变糊"。
 	 */
-	private static final double TIER2_BLOCKS_PER_DEVICE_PIXEL = 2.0;
-	private static final double TIER4_BLOCKS_PER_DEVICE_PIXEL = 6.0;
+	private static final double TIER4_BLOCKS_PER_DEVICE_PIXEL = 4.0;
+	private static final double TIER8_BLOCKS_PER_DEVICE_PIXEL = 12.0;
 
 	/** 档位迟滞：向下切换要越过阈值的这个比例（0.9 = 比阈值低 10% 才切回）。 */
 	private static final double TIER_HYSTERESIS = 0.9;
 
 	/**
-	 * 按当前缩放选本帧的档位（1 / 2 / 4 方块每像素），带迟滞：向上切换用阈值本身，向下要低
+	 * 按当前缩放选本帧的档位（1 / 4 / 8 方块每像素），带迟滞：向上切换用阈值本身，向下要低
 	 * {@value #TIER_HYSTERESIS} 倍才切回，免得在边界反复抖动时来回换档（画面忽清忽糊）。
 	 * 结果存进 {@link #terrainTier}，填充、绘制、诊断都读它。
 	 */
@@ -2547,16 +2547,20 @@ public final class WorldMapScreen extends Screen {
 		// 按"每设备像素多少方块"判档（不是 GUI 像素——那会按 guiScale 提前，见常量说明）
 		double perDevicePixel = zoom.current();
 		int tier;
-		if (perDevicePixel >= TIER4_BLOCKS_PER_DEVICE_PIXEL) {
-			tier = 4;
-		} else if (perDevicePixel >= TIER2_BLOCKS_PER_DEVICE_PIXEL) {
-			// 从 4 档往下：还没掉到 6×0.9 = 5.4 以下就先留在 4 档
-			tier = terrainTier == 4 && perDevicePixel >= TIER4_BLOCKS_PER_DEVICE_PIXEL * TIER_HYSTERESIS ? 4 : 2;
+		if (perDevicePixel >= TIER8_BLOCKS_PER_DEVICE_PIXEL) {
+			tier = WorldTilePages.COARSE_TIER_8;
+		} else if (perDevicePixel >= TIER4_BLOCKS_PER_DEVICE_PIXEL) {
+			// 从 8 档往下：还没掉到 12×0.9 = 10.8 以下就先留在 8 档
+			tier = terrainTier == WorldTilePages.COARSE_TIER_8
+					&& perDevicePixel >= TIER8_BLOCKS_PER_DEVICE_PIXEL * TIER_HYSTERESIS
+					? WorldTilePages.COARSE_TIER_8 : WorldTilePages.COARSE_TIER_4;
 		} else {
-			// 从 2 档往下：还没掉到 2×0.9 = 1.8 以下就先留在 2 档
-			tier = terrainTier == 2 && perDevicePixel >= TIER2_BLOCKS_PER_DEVICE_PIXEL * TIER_HYSTERESIS ? 2 : 1;
+			// 从 4 档往下：还没掉到 4×0.9 = 3.6 以下就先留在 4 档
+			tier = terrainTier == WorldTilePages.COARSE_TIER_4
+					&& perDevicePixel >= TIER4_BLOCKS_PER_DEVICE_PIXEL * TIER_HYSTERESIS
+					? WorldTilePages.COARSE_TIER_4 : 1;
 		}
-		// 设置里的"细节上限"：把自动选出来的档压到不超过它（4 = 不限制）
+		// 设置里的"细节上限"：把自动选出来的档压到不超过它（{@link MinimapSettings#MAX_DETAIL_TIER} = 不限制）
 		tier = Math.min(tier, settings.mapDetailTier());
 		if (tier != terrainTier) {
 			LOGGER.info("世界地图档位切换 | {} → {} 方块每像素 | 每设备像素 {} 方块（每 GUI 像素 {} 方块）",
@@ -2572,7 +2576,7 @@ public final class WorldMapScreen extends Screen {
 	private static final int COARSE_VISIT_PER_FRAME = 8;
 
 	/**
-	 * 每张粗页每次最多推进多少个粗像素（分帧推进）：2 档一页 65536 像素约 16 批走完、4 档 16384 像素 4 批。
+	 * 每张粗页每次最多推进多少个粗像素（分帧推进）：4 档一页 65536 像素约 16 批走完、8 档 16384 像素 4 批。
 	 * 像素按"一个区块占若干像素"整块取色（见 {@code CoarseTileCache#fillCoarse}），一批的实际采样量有限。
 	 */
 	private static final int COARSE_PIXELS_PER_PAGE = 4096;
@@ -2864,11 +2868,11 @@ public final class WorldMapScreen extends Screen {
 			}
 		}
 		LOGGER.info("世界地图填充 | 视野内页={} | 档={} 方块每像素 粗页模式={} 可见粗页={} 已建粗页={}"
-						+ " | 粗页明细 未建有数据={} 未建无数据={} 负表={} 已建未铺完={}"
-						+ " | 地形块={} 空洞={} 还没问={} | 本秒暖预算停={} | 夜色={} 层={}",
-				pages, terrainTier, coarseMode(), coarseVisible, tiles.coarseCount(terrainTier),
-				missingWithData, missingNoData, coarseNoData.size(), builtUnfinished,
-				terrain, holes, undecided, warmSpentSkips, nightAlpha(), describeLayer(currentLayer));
+					+ " | 粗页明细 未建有数据={} 未建无数据={} 负表={} 已建未铺完={}"
+					+ " | 地形块={} 空洞={} 还没问={} | 本秒暖预算停={} | 夜色={} 层={}",
+			pages, terrainTier, coarseMode(), coarseVisible, tiles.coarseCount(terrainTier),
+			missingWithData, missingNoData, coarseNoData.size(), builtUnfinished,
+			terrain, holes, undecided, warmSpentSkips, nightAlpha(), describeLayer(currentLayer));
 	}
 
 	/**

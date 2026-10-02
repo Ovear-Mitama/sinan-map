@@ -151,7 +151,7 @@ public final class MinimapSettingsIO {
 		json.addProperty("chunksPerVisit", settings.chunksPerVisit());
 		json.addProperty("fillingPages", settings.fillingPages());
 		json.addProperty("fillingPagesPerFrame", settings.fillingPagesPerFrame());
-		json.addProperty("mapDetailTier", settings.mapDetailTier());
+		json.addProperty("mapDetailTierV2", settings.mapDetailTier());
 		return json;
 	}
 
@@ -208,7 +208,14 @@ public final class MinimapSettingsIO {
 		settings.setFillingPages(integer(json, "fillingPages", settings.fillingPages()));
 		settings.setFillingPagesPerFrame(
 				integer(json, "fillingPagesPerFrame", settings.fillingPagesPerFrame()));
-		settings.setMapDetailTier(integer(json, "mapDetailTier", settings.mapDetailTier()));
+		// 细节档的语义变过：原来三档是 1/2/4、而 4 同时表示"不限制"；现在三档是 1/4/8、不限制是 8。
+		// 换个新键来区分：新键原样读；只有旧键时才把那个 4（当时就是"不限制"）换算成 8。
+		int detailTier = integer(json, "mapDetailTierV2", Integer.MIN_VALUE);
+		if (detailTier == Integer.MIN_VALUE) {
+			int legacy = integer(json, "mapDetailTier", MinimapSettings.MAX_DETAIL_TIER);
+			detailTier = legacy == 4 ? MinimapSettings.MAX_DETAIL_TIER : legacy;
+		}
+		settings.setMapDetailTier(detailTier);
 	}
 
 	/**

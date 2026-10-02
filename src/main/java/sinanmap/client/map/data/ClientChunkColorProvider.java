@@ -1470,10 +1470,24 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	 *
 	 * <p>要比 {@link MinimapSettings#appliedPerFrame()} 小得多：洞穴批是<b>异步</b>的
 	 * （见 {@link #applyCaveBatch}），提交出去的任务要一直挂着直到后台扫完才被 drain。批开得越大，
-	 * 同时挂在 {@link SamplePool} 里的区块 NBT 越多，既占内存、完成也更晚。取
-	 * {@value #MAX_CAVE_SCAN_PER_PUMP} 让一批很快扫完（几条线程、每块数十到两百微秒，一轮落在毫秒内）。
+	 * 同时挂在 {@link SamplePool} 里的区块 NBT 越多，既占内存、完成也更晚。
+	 *
+	 * <p><b>它同时是洞穴铺图速度的上限</b>：每 {@link #PUMP_INTERVAL_NANOS} 最多提交这么多块，
+	 * 也就是每秒 {@code MAX_CAVE_SCAN_PER_PUMP / 8ms} 块。原先取 16 → 上限约 2000 块/秒，
+	 * 实测洞穴里正好压在 1300~1800 块/秒上（一屏两万多块要十几秒）；
+	 * 提到 32 把上限抬到约 4000 块/秒，同时挂着的 NBT 也就几兆。
 	 */
-	private static final int MAX_CAVE_SCAN_PER_PUMP = 16;
+	private static final int MAX_CAVE_SCAN_PER_PUMP = 32;
+
+	/**
+	 * 预读队列还装得下吗（留四分之一余量给"前沿卡住的那一块"的补问）。
+	 *
+	 * <p>铺图那条路据此决定"还要不要接着往前问"：队列满了再问也是被丢掉（见 {@link #enqueuePrefetch}），
+	 * 白白算一遍路径。有这道闸，请求才会刚好铺满流水线而不是灌爆它。
+	 */
+	public boolean prefetchHasRoom() {
+		return prefetchQueued.size() < MAX_PREFETCH_QUEUE * 3 / 4;
+	}
 
 	/**
 	 * 两批搬运之间至少隔多久。
@@ -1583,7 +1597,11 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	 */
 	private void enqueuePrefetch(int chunkX, int chunkZ, int layer) {
 		long key = ChunkColorCache.key(chunkX, chunkZ, layer);
-		if (prefetchMissing.contains(key) || prefetchQueued.size() >= MAX_PREFETCH_QUEUE) {
+		if (prefetchMissing.contains(key)) {
+			return;
+		}
+		if (prefetchQueued.size() >= MAX_PREFETCH_QUEUE) {
+			// 被队列挡下的块：它们这一轮就当"还没定论"，要等下一轮再问（见 WorldTilePages 的补问）
 			return;
 		}
 		// "还没生成到位"的那些：隔一会儿再问一次就够了。问得太勤的话后台线程会一直在重读

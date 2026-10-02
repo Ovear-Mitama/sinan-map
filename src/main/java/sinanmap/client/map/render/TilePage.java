@@ -30,28 +30,32 @@ public final class TilePage {
 	static final int CHUNK_COUNT = WorldTilePages.PAGE_CHUNKS * WorldTilePages.PAGE_CHUNKS;
 
 	/**
-	 * 一次<b>上屏</b>的边长（区块）：{@value}×{@value} 个区块（= 64×64 方块）算一个"小块"。
+	 * 一次<b>上屏</b>跨过几条区块列：{@value} 条（= 64 方块宽）算一步。
 	 *
-	 * <p>贴图是 1 方块 1 像素，所以一个小块 = 贴图上 64×64 像素。数据是一块一块到的，若来一块就上屏一块，
-	 * 屏幕上就看得见"一格一格地长"（用户反馈）；攒成一个 64×64 的小块再上屏，观感是一块块地出现。
-	 * 一次显影的单位是 region 里的子纹理，而不是整页一起上屏。
+	 * <p>贴图是 1 方块 1 像素，所以一步 = 贴图上 64 像素宽的一条。上屏的<b>宽度</b>由它定，
+	 * 上屏的<b>位置</b>由 {@link #paintCursor} 定——两者合起来就是"从左到右一条条整齐地长出来"。
+	 * 一步取 {@value} 是显存流量的折中：传一次是整张 512×512（1 MB），一列一传就是 32 次
+	 * （见 {@link WorldTilePages#upload}）。
 	 */
 	static final int SUB_SIDE = 4;
-
-	/** 一页里有几个"小块"（每轴 {@code PAGE_CHUNKS / SUB_SIDE} 个）。 */
-	static final int SUB_COUNT = WorldTilePages.PAGE_CHUNKS / SUB_SIDE * (WorldTilePages.PAGE_CHUNKS / SUB_SIDE);
 
 	/** 每个区块问过了没有（"有数据"与"确认没有数据"都算问过）。 */
 	final boolean[] filled = new boolean[CHUNK_COUNT];
 
-	/** 每个"小块"里已经问出结果的区块数；到齐 {@code SUB_SIDE²} 才算这一小块可以上屏。 */
-	final byte[] subDecided = new byte[SUB_COUNT];
-
 	/** 有像素写下了、还没传上显存（见 {@link WorldTilePages#upload}）。 */
 	boolean pendingUpload;
 
-	/** 至少有一个"小块"凑齐了：现在允许上屏（凑不齐时靠安静时间兜底，见 upload）。 */
-	boolean uploadReady;
+	/**
+	 * <b>已经显形的那一片</b>里有像素改过、还没上屏（洞穴换高度留下的旧像素要重画、地形被改动的地方）。
+	 *
+	 * <p>与"整齐前沿往前走了一步"分开：前沿不动时 {@link #revealReady} 永远为假，只看它的话这些重画
+	 * 就永远传不上去——而且补画是连着来的，"安静 250ms"那条兜底也总被下一次写入推掉，
+	 * 于是那几个页看着<b>一直不更新</b>。有它就可以按一个固定间隔把重画分批带上去。
+	 */
+	boolean backfilled;
+
+	/** 上一次上屏的时刻（0 = 还没传过），用来限"补画"的上屏频率，见 {@link WorldTilePages#upload}。 */
+	long lastUploadNanos;
 
 	/**
 	 * 这一块<b>画上的是地形</b>（而不是涂成"没有数据"的空洞）。
@@ -85,7 +89,10 @@ public final class TilePage {
 	boolean everTerrain;
 
 	/**
-	 * 页内填充推进到第几步（步到块的映射见 {@link WorldTilePages#SWEEP_ORDER}）。
+	 * <b>往前问</b>推进到第几步（步到块的映射见 {@link WorldTilePages#SWEEP_ORDER}）。
+	 *
+	 * <p>它只负责"把请求排给后台"，<b>不问结果、也不画</b>：问得比数据到得快才喂得饱读盘队列
+	 * （见 {@link WorldTilePages#fillSome}）。画在哪儿由 {@link #paintCursor} 说了算。
 	 *
 	 * <p>页内<b>固定顺序</b>：列优先，不看朝向；"近的先出来"由<b>页与页之间</b>的顺序保证。
 	 *
@@ -93,6 +100,24 @@ public final class TilePage {
 	 * 区域边缘一圈一直黑着——比固定顺序更怪。
 	 */
 	int fillCursor;
+
+	/**
+	 * <b>画到第几步</b>：整齐的扫列前沿。
+	 *
+	 * <p>它只越过"已经问出结果"的块——所以屏幕上地形和未探明之间的那条边永远是<b>一条笔直的竖线</b>，
+	 * 按列从左往右推。以前是"游标遇到没结果的块就跳过、由补画轮转四处补上"，画面上就是
+	 * "好几列都扫过了、中间还留着几列黑的"，并且每次上屏都夹着新的黑缝。
+	 *
+	 * <p>停在前沿上不会卡死：停住的地方数据正在路上（见 {@link WorldTilePages#fillSome}），
+	 * 到货即可继续；真取不到数据的块会被判成"确认没有数据"，也算有结果。
+	 */
+	int paintCursor;
+
+	/**
+	 * 上一次上屏时 {@link #paintCursor} 到了哪一步；两个相差 {@link #SUB_SIDE} 条列才值得再传一次
+	 * （见 {@link #revealReady}）。
+	 */
+	int revealedAt;
 
 	/**
 	 * <b>问过、但结果还没到</b>的块（数据在路上；也包括"请求没排上"：见 {@link WorldTilePages#fillOne}）。
@@ -109,34 +134,46 @@ public final class TilePage {
 	/** 补画 {@link #pending} 的轮转游标：一块没到数据也不会挡住后面的块。 */
 	int pendingCursor;
 
-	/**
-	 * 这一块的结果到了（画上了地形、或确认没有数据）：记进 {@link #filled}，并推进它所属"小块"的进度；
-	 * 凑齐一小块就允许上屏，见 {@link #SUB_SIDE}。
-	 */
+	/** 这一块的结果到了（画上了地形、或确认没有数据）。 */
 	void decided(int index) {
-		if (filled[index]) {
-			return;
-		}
 		filled[index] = true;
-		if (++subDecided[subOf(index)] >= SUB_SIDE * SUB_SIDE) {
-			uploadReady = true;
-		}
 	}
 
-	/** 这一块的结果作废了（洞穴换高度、地形被改动）：下次问出结果时重新计入它那一小块。 */
+	/** 这一块的结果作废了（洞穴换高度、地形被改动）：下次问出结果时重新记一次。 */
 	void undecided(int index) {
-		if (!filled[index]) {
-			return;
-		}
 		filled[index] = false;
-		subDecided[subOf(index)]--;
 	}
 
-	/** 区块序号 {@code z * PAGE_CHUNKS + x} → 它属于第几个"小块"。 */
-	private static int subOf(int index) {
-		int side = WorldTilePages.PAGE_CHUNKS / SUB_SIDE;
-		return index / WorldTilePages.PAGE_CHUNKS / SUB_SIDE * side
-				+ index % WorldTilePages.PAGE_CHUNKS / SUB_SIDE;
+	/**
+	 * 区块序号 {@code z * PAGE_CHUNKS + x} → 它在推进顺序里的第几步（列优先，见 {@link
+	 * WorldTilePages#SWEEP_ORDER}）：{@code x * PAGE_CHUNKS + z}。
+	 */
+	static int positionOf(int index) {
+		return index % WorldTilePages.PAGE_CHUNKS * WorldTilePages.PAGE_CHUNKS
+				+ index / WorldTilePages.PAGE_CHUNKS;
+	}
+
+	/**
+	 * 记下"这一块要重画"，<b>但只限已经显示出来的那一片</b>（在 {@link #paintCursor} 之前的）。
+	 *
+	 * <p>还没显形的地方不必单独记：前沿推进到它的时候自然会按当前数据画一遍；反过来，若在那里抢先补画，
+	 * 就会在前沿右边冒出一块孤零零的地形——正是"扫列扫得乱七八糟"的来源。
+	 */
+	void markPendingIfRevealed(int index) {
+		if (positionOf(index) < paintCursor) {
+			markPending(index);
+		}
+	}
+
+	/** 整齐的扫列前沿推进到了新的一步（跨过 {@link #SUB_SIDE} 条列，或整页走完）：可以上屏了。 */
+	boolean revealReady() {
+		return paintCursor - revealedAt >= WorldTilePages.PAGE_CHUNKS * SUB_SIDE
+				|| paintCursor == CHUNK_COUNT && revealedAt != CHUNK_COUNT;
+	}
+
+	/** 这一批像素传上显存了，见 {@link #revealReady}。 */
+	void markRevealed() {
+		revealedAt = paintCursor;
 	}
 
 	/** 记下"这一块还没问出结果"。重复标记无副作用。 */
@@ -270,7 +307,8 @@ public final class TilePage {
 		dirtyDay = false;
 		dirtyNight = false;
 		pendingUpload = false;
-		uploadReady = false;
+		backfilled = false;
+		markRevealed();
 	}
 
 	/** 只回收显存，像素留着，见 {@link TileVariants#releaseGpu()}。 */

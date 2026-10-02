@@ -80,10 +80,30 @@ public final class MinimapSettings {
 	/** "自动"档：手动值取这个数时就表示"用默认"。 */
 	public static final int AUTO = -1;
 
-	/** 后台读盘线程：自动 {@value #DEFAULT_PREFETCH_THREADS}。 */
-	public static final int DEFAULT_PREFETCH_THREADS = 4;
+	/** 后台读盘线程：自动时<b>按机器核数给</b>（见 {@link #autoPrefetchThreads()}），这是下限。 */
+	public static final int DEFAULT_PREFETCH_THREADS = 6;
 	public static final int MIN_PREFETCH_THREADS = 1;
-	public static final int MAX_PREFETCH_THREADS = 8;
+	public static final int MAX_PREFETCH_THREADS = 64;
+
+	/**
+	 * 自动档的读盘线程数上限。
+	 *
+	 * <p>核数再多也压在这个数：读一块的活是"两次 pread + 解压 + 解析 NBT"，线程多到一定程度收益被
+	 * 磁盘排队吃掉，而每条线程手里可能正拎着一份解好的区块 NBT。
+	 */
+	public static final int AUTO_PREFETCH_THREADS_CAP = 32;
+
+	/**
+	 * 自动档实际用几条读盘线程：<b>按可用核数给</b>——一部分活是解压/解析（吃 CPU），一部分是等 I/O，
+	 * 给到接近核数不会互相抢；留两个核给游戏主线程与渲染线程。
+	 *
+	 * <p>以前自动固定 {@code 4}：离出生点远、数据全得从世界存档读时，那一片页面的吞吐就压在 4 条线程上
+	 * （实测约 1300~5800 块/秒，远处明显更慢）。机器越好越该多给，所以改成跟着核数走。
+	 */
+	public static int autoPrefetchThreads() {
+		return Math.clamp(Runtime.getRuntime().availableProcessors() - 2,
+				DEFAULT_PREFETCH_THREADS, AUTO_PREFETCH_THREADS_CAP);
+	}
 
 	/** 洞穴扫描线程：自动 {@value #DEFAULT_CAVE_SCAN_THREADS}。 */
 	public static final int DEFAULT_CAVE_SCAN_THREADS = 3;
@@ -115,10 +135,10 @@ public final class MinimapSettings {
 	public static final int MIN_FILLING_PAGES_PER_FRAME = 1;
 	public static final int MAX_FILLING_PAGES_PER_FRAME = 4;
 
-	/** 世界地图细节档的范围：4 = 不限制（按缩放自动），越小越粗、越省显存与带宽。 */
+	/** 世界地图细节档的范围：{@value #MAX_DETAIL_TIER} = 不限制（按缩放自动），越小越粗、越省显存与带宽。 */
 	public static final int MIN_DETAIL_TIER = 1;
 
-	public static final int MAX_DETAIL_TIER = 4;
+	public static final int MAX_DETAIL_TIER = 8;
 
 	/**
 	 * 小地图下面可以显示的信息行。
@@ -267,10 +287,10 @@ public final class MinimapSettings {
 	private int fillingPagesPerFrame = AUTO;
 
 	/**
-	 * 世界地图的最高细节档（1 / 2 / 4 方块每像素）。
+	 * 世界地图的最高细节档（1 / 4 / 8 方块每像素）。
 	 *
 	 * <p>默认 {@value #MAX_DETAIL_TIER} = 不限制：仍然按缩放自动选档（见 {@code WorldMapScreen#updateTerrainTier}）。
-	 * 调小之后画面上限就是那一档，显存与填充量随之下降——低配机想稳帧时可以把它压到 2 甚至 1。
+	 * 调小之后画面上限就是那一档，显存与填充量随之下降——低配机想稳帧时可以把它压到 4 甚至 1。
 	 */
 	private int mapDetailTier = MAX_DETAIL_TIER;
 
@@ -665,7 +685,7 @@ public final class MinimapSettings {
 
 	/** 实际用几条读盘线程。 */
 	public int effectivePrefetchThreads() {
-		return prefetchThreads == AUTO ? DEFAULT_PREFETCH_THREADS : prefetchThreads;
+		return prefetchThreads == AUTO ? autoPrefetchThreads() : prefetchThreads;
 	}
 
 	/** 洞穴扫描线程（手动值；{@link #AUTO} = 自动）。 */

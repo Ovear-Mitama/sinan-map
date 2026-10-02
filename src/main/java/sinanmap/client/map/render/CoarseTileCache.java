@@ -41,6 +41,9 @@ final class CoarseTileCache {
 		/** 这一档这一页的键（与叶页同一套坐标，档作为一个分量）。 */
 		long coarseKey(int layer, int blocksPerPixel, int pageX, int pageZ);
 
+		/** 更细那一档的某一页（叶页坐标）是不是"在本界面要铺的范围里、迟早会被铺出来"。 */
+		boolean finerExpected(int layer, int pageX, int pageZ);
+
 		/** 页键上用的层（归档层），见 {@code WorldTilePages#keyLayer}。 */
 		int keyedLayer(int layer);
 	}
@@ -76,6 +79,23 @@ final class CoarseTileCache {
 	 * 真有新数据时 {@link #markDirty} 会把 {@code retryAtNanos} 清 0，那一页立刻重扫，不会变迟钝。
 	 */
 	private static final long COARSE_RETRY_MAX_NANOS = 30_000_000_000L;
+
+	/**
+	 * 档=2 时，粗页最多连着等多久"更细那一档铺到这儿"，见 {@code fillCoarse} 里的 {@code keepFinerOnly}。
+	 *
+	 * <p>取 {@value} 秒：叶页一页要几十帧才推完，这段时间够它追上来；追不上（比如更细那一页根本没人在铺）
+	 * 就恢复回落，宁可多算一遍也不能让这一页一直空着。
+	 */
+	private static final long MAX_DEFER_NANOS = 2_000_000_000L;
+
+	/**
+	 * 更细那一档的前沿离这一格还有多少步时，才值得"等它铺过来"。
+	 *
+	 * <p>取两列（{@value WorldTilePages#PAGE_CHUNKS}×2 步）：叶页一帧推进几十步，两列是几帧的事，
+	 * 等这一下比回世界重采一遍划算；再远就不值得——那时它的前沿多半卡在别处（甚至这一页已经铺完、
+	 * 不会再来），等下去就是每 {@value #MAX_DEFER_NANOS} 纳秒空转一轮，收尾会变成"一步一停"。
+	 */
+	private static final int DEFER_LOOKAHEAD = WorldTilePages.PAGE_CHUNKS * 2;
 
 	/** 粗页仓库（键 = 层 + 档 + 页坐标，页坐标与叶页同一套）。 */
 	private final Map<Long, CoarsePage> coarse = new LinkedHashMap<>(32, 0.75F, true);
@@ -145,6 +165,17 @@ final class CoarseTileCache {
 		private long retryNanos = COARSE_RETRY_NANOS;
 		/** 这一轮扫掠已填上的像素数（扫完一圈清零），只为回答"这一轮有没有进展"。 */
 		private int sweepPainted;
+
+		/** 这一轮有多少个像素是"更细那一档还没铺到、先留着"的，见 {@link #fillCoarse}。 */
+		private int sweepDeferred;
+
+		/**
+		 * 从什么时候起这一页"只在等更细那一档"了（0 = 没在等）。
+		 *
+		 * <p>等到 {@value #MAX_DEFER_NANOS} 还没等到就恢复回落：万一更细那一页根本没人在铺
+		 * （视野比它的填充范围宽、或它被挤出了填充顺序），不能让这一页永远等下去。
+		 */
+		private long deferredSinceNanos;
 		/** 上一轮扫掠<b>一个像素都没填上</b>（剩下的全是"还没定论"）：扫完一圈没进展就不再算"正在加载"，但依旧定期重扫。 */
 		private boolean stalled;
 		/** 这一张有没有<b>真的填进过一块地形</b>（不是"确认没有数据"的透明格）；单调只置 true 不清。 */
@@ -190,12 +221,12 @@ final class CoarseTileCache {
 	 * 粗页填充顺序（每档一张）：<b>按区块一列一列地扫</b>，走向与理由写在
 	 * {@link TileSweepOrder#coarseColumns} 那里——页内的推进顺序全工程只此一处。
 	 */
-	private static final int[] COARSE_SWEEP_2 = buildCoarseSweep(WorldTilePages.COARSE_TIER_2);
 	private static final int[] COARSE_SWEEP_4 = buildCoarseSweep(WorldTilePages.COARSE_TIER_4);
+	private static final int[] COARSE_SWEEP_8 = buildCoarseSweep(WorldTilePages.COARSE_TIER_8);
 
-	/** 取某一档的填充顺序表，见 {@link #COARSE_SWEEP_2}。 */
+	/** 取某一档的填充顺序表，见 {@link #COARSE_SWEEP_4}。 */
 	private static int[] coarseSweepOrder(int blocksPerPixel) {
-		return blocksPerPixel == WorldTilePages.COARSE_TIER_2 ? COARSE_SWEEP_2 : COARSE_SWEEP_4;
+		return blocksPerPixel == WorldTilePages.COARSE_TIER_4 ? COARSE_SWEEP_4 : COARSE_SWEEP_8;
 	}
 
 	/** 生成某一档的顺序表：把参数折成"贴图边长 / 每区块像素 / 每边区块数"交给 {@link TileSweepOrder}。 */
@@ -262,6 +293,9 @@ final class CoarseTileCache {
 		page.remaining = page.pixels;
 		page.fillCursor = 0;
 		page.sweepPainted = 0;
+		page.sweepDeferred = 0;
+		// 换档了：这是全新的一遍，重新给它"先等更细那一档"的机会
+		page.deferredSinceNanos = 0L;
 		page.stalled = false;
 		page.retryAtNanos = 0L;
 	}
@@ -447,6 +481,10 @@ final class CoarseTileCache {
 		// 本次访问走过多远。空格不计预算，光靠预算兜不住"整页都是空格"这种情况，所以再用"最多绕一整页"
 		// 封顶（多走的都只是极轻的迭代）。
 		int walked = 0;
+		// 中间那一档（更细的是叶页）时"更细那一档还没铺到"的像素<b>先留着、不回落</b>（见 keepFinerOnly）
+		long nowDefer = System.nanoTime();
+		boolean keepFinerOnly = blocksPerPixel == WorldTilePages.COARSE_TIER_4
+				&& (page.deferredSinceNanos == 0L || nowDefer - page.deferredSinceNanos < MAX_DEFER_NANOS);
 		while (spent < budget && walked < page.pixels) {
 			// 全局建数据预算用完：停在游标上，剩下的下一帧接着填。这一条必须排在游标前进之前：
 			// 否则"预算已经用完、一个像素都没填"也会被算成"有进展"，白占掉这一帧的名额。
@@ -457,22 +495,35 @@ final class CoarseTileCache {
 			page.fillCursor = (page.fillCursor + 1) % page.pixels;
 			walked++;
 			if (page.fillCursor == 0) {
-				// 一整遍扫完了：没填上的留到下一轮，先冷却一会儿，别每帧空扫、把预算从"真有数据的粗页"
-				// 那里抢走。顺手判定"这一轮有没有进展"：一个都没填上就说明剩下的全是"还没定论"，
-				// 于是不再算"正在加载"——否则圈会一直转。
-				page.stalled = page.sweepPainted == 0;
+				// "停住了"= 这一遍既没填上、也没在等更细那一档。等更细那一档不算空转：它是在等真实进展，
+				// 下一遍（叶页一写出东西就会把它叫醒，见 invalidateCoarseChunk）就能接着填。
+				page.stalled = page.sweepPainted == 0 && page.sweepDeferred == 0;
 				// 允许上屏：这一遍能填的都填上了，整页一起显影（见 CoarsePage#sweepDone）
 				page.sweepDone = true;
 				page.sweepPainted = 0;
+				// 这一遍在等更细那一档？记下"从什么时候开始等"；某一遍不用等了就清零，下一回重新给机会
+				if (page.sweepDeferred > 0) {
+					if (page.deferredSinceNanos == 0L) {
+						page.deferredSinceNanos = System.nanoTime();
+					}
+				} else {
+					page.deferredSinceNanos = 0L;
+				}
+				page.sweepDeferred = 0;
 				// 这一遍一块都没填上（剩下的全是"还没定论"）：退避翻倍，别每 1.5 秒把同样的像素重问一遍
 				// ——实测那是每秒 40~65 万像素、370~460 毫秒的纯浪费（见 COARSE_RETRY_MAX_NANOS）。
-				// 有进展就退回基准间隔；真有新数据时 markDirty 会直接把它清 0。
+				// <b>这一遍填上了东西就不等</b>：说明这一页还有活可干，立刻接着扫下一遍。
+				// 以前这里也等一个 {@link #COARSE_RETRY_NANOS}，而"已经填过"的像素不计预算
+				// （见下面的 {@code filled} 短路），所以一页接近填完时一遍常常只走一两个像素——
+				// 于是每补一格都要等 1.5 秒，27 张页的收尾要 8 秒，屏幕上就是几条黑列过一会儿才补上。
+				// 真有新数据时 {@link #markDirty} / {@link #wake} 也会把它清 0。
 				if (page.stalled) {
 					page.retryNanos = Math.min(page.retryNanos * 2, COARSE_RETRY_MAX_NANOS);
+					page.retryAtNanos = System.nanoTime() + page.retryNanos;
 				} else {
 					page.retryNanos = COARSE_RETRY_NANOS;
+					page.retryAtNanos = 0L;
 				}
-				page.retryAtNanos = System.nanoTime() + page.retryNanos;
 			}
 			if (page.filled[index]) {
 				// 已经填过的像素：只是查一下数组，不计预算
@@ -504,6 +555,8 @@ final class CoarseTileCache {
 					finer = null;
 				}
 			}
+			// 这一像素要不要"等更细那一档铺到这儿"（档=2，见下面的 deferToFiner）
+			boolean deferToFiner = false;
 			if (finer != null) {
 				// 粗像素 (pixelX, pixelZ) 在<b>这一张叶页</b>里对应的叶像素左上角。
 				// 它一定落在同一个叶区块里：blocksPerPixel 整除 16，而叶像素左上是它的倍数。
@@ -539,7 +592,31 @@ final class CoarseTileCache {
 					}
 					// 更细那一页画过地形、但这一小块里一列有数据的都没有：回落去直接采样，别把它当成
 					// "没有数据"（叶页一整块里本就有透明列）
+				} else {
+					// 更细那一档还没铺到这一块。只有<b>它快走到这一格</b>才值得等：差得远说明它的前沿
+					// 卡在别处（甚至已经铺完、不会再来），等下去就是每 2 秒空转一轮——收尾时
+					// "最后一格走一步停两秒"就是这么来的（见下面的 deferToFiner）。
+					int ahead = TilePage.positionOf(leafIndex) - finer.paintCursor;
+					deferToFiner = ahead >= 0 && ahead <= DEFER_LOOKAHEAD;
 				}
+			} else {
+				// 更细那一页还没<b>建</b>出来：只要它在界面要铺的范围里，就迟早会被建出来、铺上，
+				// 同样值得等（见 Host#finerExpected）。范围之外的（外圈那些）仍走回落，远处不会因此空掉。
+				deferToFiner = host.finerExpected(layer, finePageX, finePageZ);
+			}
+			if (deferToFiner && keepFinerOnly) {
+				// 档=2 时先留着，不回世界重采一遍。
+				//
+				// 为什么值得等：粗页从叶页降采样是纯内存读，回世界采样却要按粗步长<b>逐块问数据</b>——
+				// 实测档=2 时"回落"是"降采样"的 5~10 倍（45696px vs 216906px），而两个档位铺的是同一片
+				// 地方：叶页本来就要铺、也是粗页降采样的来源，等于同一份数据被算了两遍，档=2 因此比
+				// 档=4 慢近一倍。等叶页铺到这儿再取，这一份工作就省掉了。
+				//
+				// 不会一直等：等到 {@value #MAX_DEFER_NANOS} 纳秒还没等到就恢复回落（见 deferredSinceNanos）；
+				// 叶页每写一块也会把这一页叫醒（见 invalidateCoarseChunk），所以它是跟着叶页往前走的。
+				spent--;
+				page.sweepDeferred++;
+				continue;
 			}
 			// 第 2 步：回落——回世界按粗步长直接采样（可能走缓存、也可能要后台读盘）。
 			statFallback++;
@@ -697,8 +774,19 @@ final class CoarseTileCache {
 		}
 		long nowNanos = System.nanoTime();
 		if (page.remaining > 0) {
-			// 还没填完：得等这一遍扫完（见 CoarsePage#sweepDone），而且别传得太密
-			if (!page.sweepDone) {
+			// 还没填完：要等"这一遍扫完了"，<b>而且这一遍没再填上新东西</b>。
+			//
+			// 后半条是"整页一起显影"的关键。一遍扫完常常只填上了"数据已经到手"的那几列，剩下的列要么还在
+			// 读盘、要么正被上一层留下的旧像素占着（换层级时整页作废重扫，见 {@link #refreshCoarseHeight}）。
+			// 这时候传上去，画面上就是<b>新老混着、夹着几列黑的</b>：页面出现后有几条黑列没加载、
+			// 过一会儿才补上，切换层级时尤其明显。
+			//
+			// 等一遍真的一个像素都填不上（{@code stalled}）再传：这一页此刻能填的都填上了，整页一次显形；
+			// 换层级时旧那层的样子会一直留着，直到新这层铺好才整体翻过去，中间不会露黑列。
+			//
+			// <b>不会因此一直不出图</b>：只要没有新数据，随后总有一遍填不上任何像素，那一遍就放行；
+			// 填完的（{@code remaining == 0}）更是不受这条限制（见下面的分支）。
+			if (!page.sweepDone || !page.stalled) {
 				return false;
 			}
 			if (page.lastUploadNanos != 0L
@@ -720,6 +808,11 @@ final class CoarseTileCache {
 		if (uploaded) {
 			// 记下这次上屏的时刻，并把"这一遍扫完了"用掉：下一次要等下一遍扫完（见本方法说明）
 			page.lastUploadNanos = nowNanos;
+			page.sweepDone = false;
+		} else if (!page.dirtyDay && !page.dirtyNight) {
+			// 这一遍一点可传的都没有（典型是"整遍空扫"）：许可也得用掉。
+			// 留着的话，下一次扫掠进行到一半时它也还是 true，上面那句"扫完一整遍才上屏"就形同虚设——
+			// 画面会按"游标扫到哪就传到哪"显影，屏幕上就会剩几列没扫完的黑线。
 			page.sweepDone = false;
 		}
 		return uploaded;
@@ -747,8 +840,8 @@ final class CoarseTileCache {
 				+ Math.floorMod(chunkIndex, WorldTilePages.PAGE_CHUNKS);
 		int chunkZ = Math.floorMod(leafPageZ, WorldTilePages.COARSE_PACK) * WorldTilePages.PAGE_CHUNKS
 				+ Math.floorMod(chunkIndex / WorldTilePages.PAGE_CHUNKS, WorldTilePages.PAGE_CHUNKS);
-		invalidateCoarseChunk(layer, WorldTilePages.COARSE_TIER_2, packX, packZ, chunkX, chunkZ);
 		invalidateCoarseChunk(layer, WorldTilePages.COARSE_TIER_4, packX, packZ, chunkX, chunkZ);
+		invalidateCoarseChunk(layer, WorldTilePages.COARSE_TIER_8, packX, packZ, chunkX, chunkZ);
 	}
 
 	/** 把某一档粗页里、某个区块覆盖的那一小块像素标成待重填，见 {@link #markDirty}。 */
@@ -778,13 +871,45 @@ final class CoarseTileCache {
 				}
 			}
 		}
-		if (invalidated) {
-			// 有新数据落进这一页：立刻允许重扫，别等冷却期；同时把"停住了"与翻倍退避一起清掉
-			// ——这一页又有真活干了，加载指示该照常出现
-			page.stalled = false;
-			page.retryAtNanos = 0L;
-			page.retryNanos = COARSE_RETRY_NANOS;
+		// 走到这儿就说明"这一页的更细来源又前进了一块"：立刻允许重扫，别等冷却期；同时把"停住了"与
+		// 翻倍退避一起清掉——这一页又有真活干了，加载指示该照常出现。
+		//
+		// <b>不看 invalidated</b>：档=2 时粗页常常在"等更细那一档铺到这儿"（那些像素本来就没填过，
+		// 一个都不会被作废），正是靠这一次次叫醒才跟着叶页往前走；只有像素被作废时才叫醒的话，
+		// 等待中的粗页就只能干等到退避上限（30 秒）。
+		page.stalled = false;
+		page.retryAtNanos = 0L;
+		page.retryNanos = COARSE_RETRY_NANOS;
+	}
+
+	/**
+	 * <b>"这一格的数据刚到手 / 内容刚变"：把覆盖它的粗页从退避里叫醒。</b>
+	 *
+	 * <p>粗像素在"回世界采样还拿不到数据"时留空、{@code filled} 也不标，只等游标下一遍绕回来再问；而"再问"
+	 * 的间隔在整遍空扫之后会逐次翻倍（见 {@link #COARSE_RETRY_MAX_NANOS}）。一页填到只剩下几个洞时，
+	 * 之后每一遍都是空扫，退避会一路涨到上限——<b>那几个洞就要黑整整数十秒</b>，屏幕上是几列一直补不上的黑线。
+	 *
+	 * <p>数据到手这件事只有 {@code ClientChunkColorProvider} 知道（{@code drainArrivedChunks} /
+	 * {@code drainChangedChunks}），由 {@code WorldTilePages#markArrived} / {@code #markStale} 转达。
+	 * 这里只清退避、不做别的：真要重画哪些像素，交给下一遍扫掠按数据实际情况决定。
+	 */
+	void wake(int layer, int chunkX, int chunkZ) {
+		wakeTier(layer, WorldTilePages.COARSE_TIER_4, chunkX, chunkZ);
+		wakeTier(layer, WorldTilePages.COARSE_TIER_8, chunkX, chunkZ);
+	}
+
+	/** 某一档里覆盖这一格的粗页，见 {@link #wake}。 */
+	private void wakeTier(int layer, int blocksPerPixel, int chunkX, int chunkZ) {
+		// 一张粗页管 PAGE_CHUNKS × COARSE_PACK 个区块：直接由世界区块坐标折出粗页坐标
+		int chunksPerPage = WorldTilePages.PAGE_CHUNKS * WorldTilePages.COARSE_PACK;
+		CoarsePage page = coarse.get(host.coarseKey(layer, blocksPerPixel,
+				Math.floorDiv(chunkX, chunksPerPage), Math.floorDiv(chunkZ, chunksPerPage)));
+		if (page == null) {
+			return;
 		}
+		page.stalled = false;
+		page.retryAtNanos = 0L;
+		page.retryNanos = COARSE_RETRY_NANOS;
 	}
 
 	/** 常驻的粗页张数（诊断用）。 */

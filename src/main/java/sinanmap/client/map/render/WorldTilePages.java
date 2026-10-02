@@ -168,6 +168,13 @@ public final class WorldTilePages implements Closeable {
 		}
 
 		@Override
+		public boolean finerExpected(int layer, int pageX, int pageZ) {
+			// 这一叶页在"界面要铺的范围"里（见 TileProtection）→ 它迟早会被建出来、铺上，
+			// 所以粗页值得等它（档=2 的降采样来源），不必回世界重采一遍。
+			return protection.containsLeaf(keyLayer(layer), pageX, pageZ);
+		}
+
+		@Override
 		public int keyedLayer(int layer) {
 			return keyLayer(layer);
 		}
@@ -333,7 +340,8 @@ public final class WorldTilePages implements Closeable {
 			// {@code hasTerrain} 判断"要不要重问"。{@code painted} 仍是 true，于是重画时若新高度那边
 			// 没洞可画，就继续留着旧像素、不会闪黑（见 fillOne）。
 			page.hasTerrain[index] = false;
-			page.markPending(index);
+			// 只记已经显形的那一片；前沿右边的地方由前沿自己按新高度画（见 TilePage#markPendingIfRevealed）
+			page.markPendingIfRevealed(index);
 			stale++;
 		}
 		// 洞穴里每上下 1 格就会走到这里一次，日志按秒限流，免得一走动就刷屏
@@ -396,14 +404,15 @@ public final class WorldTilePages implements Closeable {
 	}
 
 	/**
-	 * 档位编码：叶页 = 0（1 方块/像素）、2 方块/像素 = 1、4 方块/像素 = 2。
+	 * 档位编码：叶页 = 0（1 方块/像素）、{@value #COARSE_TIER_4} 方块/像素 = 1、{@value #COARSE_TIER_8}
+	 * 方块/像素 = 2。
 	 *
 	 * <p>进 {@link #key} 的只有这 2 位编码，真正的"方块/像素"数值另行传递，这样键才塞得进 64 位。
 	 */
 	private static int gradeCode(int blocksPerPixel) {
 		return switch (blocksPerPixel) {
-			case 2 -> 1;
-			case 4 -> 2;
+			case COARSE_TIER_4 -> 1;
+			case COARSE_TIER_8 -> 2;
 			default -> 0;
 		};
 	}
@@ -428,22 +437,40 @@ public final class WorldTilePages implements Closeable {
 		// fillOne 会动它，所以这一段的增量就是本方法写下的块数）。
 		long statT0 = ClientChunkColorProvider.STATS_ENABLED ? System.nanoTime() : 0L;
 		int statPaintsBefore = framePaints;
-		int startCursor = page.fillCursor;
+		int startAsk = page.fillCursor;
+		int startPaint = page.paintCursor;
 		int processed = 0;
-		// 一段：把"数据已经到的"画上
+		// 一段：把<b>整齐的前沿</b>往前推。只越过"已经问出结果"的块，遇到还没定论的就停在这一步上
+		// （数据在路上，到货即可继续）——屏幕上地形与未探明之间因此永远是一条笔直的竖线，
+		// 从左往右推，不会"扫过好几列、中间还留着几列黑的"。
+		while (page.paintCursor < PAGE_CHUNK_COUNT && processed < limit) {
+			if (colors.isWarmSpent()) {
+				frameBudgetOut++;
+				break;
+			}
+			int index = SWEEP_ORDER[page.paintCursor];
+			if (!fillOne(page, index)) {
+				// 还没定论（数据在路上 / 请求没排上）：停在前沿上，下一帧再来
+				break;
+			}
+			page.paintCursor++;
+			page.clearPending(index);
+			processed++;
+		}
+		// 二段：把已经显示出来的地方里"要重画"的块补上（洞穴换高度留下的旧像素、地形被改动的地方）。
+		// 只扫 {@link TilePage#markPendingIfRevealed} 记下的那些，所以不会在前沿右边抢先冒地形。
 		for (int probe = 0; probe < PAINT_PROBES && processed < limit && page.pendingCount > 0; probe++) {
 			frameProbes++;
-			// 补画也走同一张固定表（见 SWEEP_ORDER）：以前这里直接在"块索引"上转圈，而索引是
-			// z * 32 + x，所以补上的那几块是从上到下一行行长出来的——与问新块的方向不同，
-			// 一页里就同时看得到"由内向外"和"一行行"两种走向（用户反馈）。统一到一张表之后，
-			// 页内无论问新块、补画、还是重试轮转，都是同一个方向。
 			int index = SWEEP_ORDER[page.pendingCursor];
 			page.pendingCursor = (page.pendingCursor + 1) % PAGE_CHUNK_COUNT;
 			if (!page.pending[index]) {
 				continue;
 			}
 			frameMarked++;
-			if (colors.isWarmSpent()) {
+			if (colors.isWarmSpent() || !colors.prefetchHasRoom()) {
+				// 队列满了：要的数据要么已经在路上、要么这一轮排不上（见 prefetchHasRoom）。
+				// 不在这儿停手的话，一帧能往队列上撞两百多次、绝大多数被丢掉，纯白算路径——
+				// 换洞穴高度时整页几百块同时要重画，实测每秒两万次被拒就是这么来的。
 				frameBudgetOut++;
 				if (ClientChunkColorProvider.STATS_ENABLED) {
 					colors.stats().recordFillSome(System.nanoTime() - statT0, framePaints - statPaintsBefore);
@@ -456,32 +483,39 @@ public final class WorldTilePages implements Closeable {
 			page.clearPending(index);
 			processed++;
 		}
-		// 二段：往下问新的
+		// 三段：<b>往前问</b>。只把请求排给后台，<b>不问结果、也不画</b>——数据到了由一段的前沿
+		// 按顺序用掉，画面上因此仍是一条整齐的竖线。
+		//
+		// <b>轮转着扫，不是只扫一遍。</b>队列满的时候请求会被丢掉（见 MAX_PREFETCH_QUEUE），只扫一遍
+		// 的话那些块就再也没人问：前沿卡在它们上面等，只能自己一块一块补问，一次一个磁盘往返——
+		// 既慢、圈还一直转。轮转则排不上就一直重问，
+		// 队列一有空位马上补上。
+		//
+		// 队列快满就停手：接着问也只是被丢掉，白算一遍路径（见 prefetchHasRoom）。
 		int asked = 0;
-		while (page.fillCursor < PAGE_CHUNK_COUNT && processed < limit && asked < ASK_LIMIT) {
-			if (colors.isWarmSpent()) {
-				frameBudgetOut++;
+		for (int probe = 0; probe < PAGE_CHUNK_COUNT && asked < ASK_LIMIT; probe++) {
+			if (colors.isWarmSpent() || !colors.prefetchHasRoom()) {
 				break;
 			}
-			asked++;
 			// 页内固定列优先：一列一列地走，先从上到下走完一列再走右边那一列
 			// （见 SWEEP_ORDER）。不看玩家朝向——那样斜着走会扫出斜条带、转头还会跳。
-			int index = SWEEP_ORDER[page.fillCursor++];
+			int index = SWEEP_ORDER[page.fillCursor];
+			page.fillCursor = (page.fillCursor + 1) % PAGE_CHUNK_COUNT;
 			if (page.filled[index]) {
-				// 被 markStale 挑出来重填的区块，重新走一遍时会遇到已填过的
+				// 已经有结果的块（含"确认没有数据"）：只是跳过去看一眼，不计预算
 				continue;
 			}
-			if (fillOne(page, index)) {
-				processed++;
-			} else {
-				page.markPending(index);
-			}
+			int chunkX = page.pageX * PAGE_CHUNKS + index % PAGE_CHUNKS;
+			int chunkZ = page.pageZ * PAGE_CHUNKS + index / PAGE_CHUNKS;
+			asked++;
+			// 取色入口自己会把请求排给后台（已经在队列里就什么都不做），结果留在缓存里等前沿来用
+			colors.colorsForChunk(chunkX, chunkZ);
 		}
 		// 【诊断计量】本次叶页填充的耗时与写下的块数
 		if (ClientChunkColorProvider.STATS_ENABLED) {
 			colors.stats().recordFillSome(System.nanoTime() - statT0, framePaints - statPaintsBefore);
 		}
-		return processed > 0 || page.fillCursor != startCursor;
+		return processed > 0 || page.fillCursor != startAsk || page.paintCursor != startPaint;
 	}
 
 	/**
@@ -524,7 +558,8 @@ public final class WorldTilePages implements Closeable {
 	public boolean awaitingData(TilePage page) {
 		// "还没轮到的页"不算。只有"已经开过工、这一遍还没走完"的页才转圈——
 		// 排队等开工的页（同时填的页数有上限）游标还是 0，把它们也算进来圈就永远转个不停。
-		return started(page) && page.fillCursor < PAGE_CHUNK_COUNT;
+		// 看的是<b>画到哪</b>（整齐前沿）：它才是"这一屏长到哪儿了"。
+		return started(page) && page.paintCursor < PAGE_CHUNK_COUNT;
 	}
 
 	/**
@@ -678,7 +713,7 @@ public final class WorldTilePages implements Closeable {
 
 	/** 这一页是不是已经开过工（问过至少一块）。见 {@code WorldMapScreen} 里"同时在填的页数"封顶。 */
 	public boolean started(TilePage page) {
-		return page.fillCursor > 0 || page.pendingCount > 0;
+		return page.fillCursor > 0 || page.paintCursor > 0 || page.pendingCount > 0;
 	}
 
 	/**
@@ -712,12 +747,11 @@ public final class WorldTilePages implements Closeable {
 	/**
 	 * 这一页还有没有活要干（整屏填充顺序由调用方按"离玩家由近到远"重排，见 {@link #fillSome}）。
 	 *
-	 * <p><b>两个条件缺一不可</b>：游标没走完，<b>或者</b>还有在等数据的块（{@link TilePage#pendingCount}）。
-	 * 只看游标会<b>死住</b>：游标把剩下的块全标成"待问"后走到底，那几百块没画上，而调用方见
-	 * {@code hasWork} 为假就再也不来访问。
+	 * <p><b>两个条件缺一不可</b>：整齐前沿还没走完，<b>或者</b>还有要重画的块（{@link TilePage#pendingCount}）。
+	 * 只看前沿会<b>死住</b>：换高度 / 地形改动留下的旧像素没人重画，那一页看上去"填完了"却一直是错的。
 	 */
 	public boolean hasWork(TilePage page) {
-		return page.fillCursor < PAGE_CHUNK_COUNT || page.pendingCount > 0;
+		return page.paintCursor < PAGE_CHUNK_COUNT || page.pendingCount > 0;
 	}
 
 	/**
@@ -788,6 +822,9 @@ public final class WorldTilePages implements Closeable {
 	 * @param skipIfPainted 已经画着地形的格子要不要跳过，见 {@link #markArrived}
 	 */
 	private boolean requeue(int layer, int chunkX, int chunkZ, boolean skipIfPainted) {
+		// 粗页也要一起叫醒，而且不看下面叶页找没找到：粗页与叶页各存各的像素，这一格即使没有叶页，
+		// 覆盖它的粗页也可能正留着"数据没到手"的洞，且正处在翻倍退避的长冷却里（见 CoarseTileCache#wake）。
+		coarseCache.wake(layer, chunkX, chunkZ);
 		int pageX = Math.floorDiv(chunkX, PAGE_CHUNKS);
 		int pageZ = Math.floorDiv(chunkZ, PAGE_CHUNKS);
 		long key = key(layer, 0, pageX, pageZ);
@@ -805,9 +842,10 @@ public final class WorldTilePages implements Closeable {
 		// 不把那一格先涂成未探明：未探明像素全透明，涂一下那一格就闪一下黑，一屏几十处一起发生就是
 		// "已经加载好的地方时不时闪黑块"。补画按块轮转、数据一到就画（见 fillSome），旧地形多留一两帧更好。
 		//
-		// 不要动 fillCursor：归零等于把游标后面那些块整页重走一遍；这一块由 pending 单独记着。
+		// 不动游标；这一块由 pending 单独记着，而且<b>只记已经显形的那一片</b>——前沿右边的地方
+		// 由前沿自己按最新数据画一遍，不需要（也不能）在那里抢先补（见 TilePage#markPendingIfRevealed）。
 		page.undecided(index);
-		page.markPending(index);
+		page.markPendingIfRevealed(index);
 		return true;
 	}
 
@@ -849,8 +887,10 @@ public final class WorldTilePages implements Closeable {
 			uploaded = true;
 		}
 		if (uploaded) {
-			// 这一轮的许可用掉了：下次要攒到"又有一小块凑齐"，或再安静够时间
-			page.uploadReady = false;
+			// 这一轮的许可用掉了：下次要等整齐的前沿再往前走一步，或再攒够补画间隔
+			page.lastUploadNanos = System.nanoTime();
+			page.backfilled = false;
+			page.markRevealed();
 		}
 		return uploaded;
 	}
@@ -861,14 +901,28 @@ public final class WorldTilePages implements Closeable {
 	}
 
 	/**
-	 * 现在允不允许这一页上屏：<b>至少一个小块凑齐了</b>，或者已经安静了 {@value #UPLOAD_SETTLE_NANOS} 纳秒。
+	 * 现在允不允许这一页上屏：<b>整齐的扫列前沿又往前走了一步</b>，或者<b>已经显形的那一片有重画</b>
+	 * （按 {@value #UPLOAD_BACKFILL_INTERVAL_NANOS} 纳秒限流），或者已经安静了
+	 * {@value #UPLOAD_SETTLE_NANOS} 纳秒。
 	 *
-	 * <p>后半条是兜底：万一某一块的请求卡住很久，也不能让已经画好的那部分一直不上屏。
+	 * <p>前半条让"显形"跟着那条竖线走（每 {@link TilePage#SUB_SIDE} 条列传一次，见
+	 * {@link TilePage#revealReady}）。
+	 *
+	 * <p>中间那条是洞穴换高度 / 地形改动那条路：前沿早就走完了，{@code revealReady} 永远为假，
+	 * 而补画一块接一块地来、每次都把"安静 250ms"推掉——只靠后一条的话这些重画永远上不了屏，
+	 * 那几个页看着一直不更新。按固定间隔带上去即可，不必等安静。
+	 *
+	 * <p>最后一条仍是兜底：万一某一块的请求卡住很久，也不能让已经画好的那部分一直不上屏。
 	 */
 	private static boolean uploadAllowed(TilePage page) {
-		return page.uploadReady
-				|| System.nanoTime() - page.paintedAtNanos >= UPLOAD_SETTLE_NANOS;
+		long now = System.nanoTime();
+		return page.revealReady()
+				|| page.backfilled && now - page.lastUploadNanos >= UPLOAD_BACKFILL_INTERVAL_NANOS
+				|| now - page.paintedAtNanos >= UPLOAD_SETTLE_NANOS;
 	}
+
+	/** 已显形区域的重画最多多久带一次上屏，见 {@link #uploadAllowed}。 */
+	private static final long UPLOAD_BACKFILL_INTERVAL_NANOS = 100_000_000L;
 
 	/** 一页在"还在变化"时最多憋多久不上传，见 {@link #uploadAllowed}。 */
 	private static final long UPLOAD_SETTLE_NANOS = 250_000_000L;
@@ -950,9 +1004,11 @@ public final class WorldTilePages implements Closeable {
 		int baseX = index % PAGE_CHUNKS * CHUNK_SIZE;
 		int baseY = index / PAGE_CHUNKS * CHUNK_SIZE;
 		page.loaded = true;
-		// 不在这里标脏：什么时候允许上屏由"小块凑齐没有"决定（见 upload）。这里只记"有像素还没上屏"
-		// 与最后一次写入的时刻（安静时间的判据）。
+		// 不在这里标脏：什么时候允许上屏由"整齐前沿 / 补画间隔"决定（见 upload）。这里只记
+		// "有像素还没上屏"、最后一次写入的时刻（安静时间的判据），以及"这次写的是已显形那一片"——
+		// 后者让洞穴换高度 / 地形改动的重画能按固定间隔带上去，而不是永远等那个总被推掉的"安静"。
 		page.pendingUpload = true;
+		page.backfilled = true;
 		page.paintedAtNanos = System.nanoTime();
 		// 这一叶变了：覆盖它的粗页要重建（缩小时画的就是粗页）
 		coarseCache.markDirty(page.layer(), page.pageX, page.pageZ, index);
@@ -966,16 +1022,28 @@ public final class WorldTilePages implements Closeable {
 		}
 		// 真的画出地形了：记下"这一片确实有数据"，加载指示据此才可能继续转圈
 		page.everTerrain = true;
-		paint(page.textures().day().getPixels(), baseX, baseY, dayPixels);
-		paint(page.textures().night().getPixels(), baseX, baseY, nightPixels);
+		paint(page.textures().day().getPixels(), page.textures().night().getPixels(),
+				baseX, baseY, dayPixels, nightPixels);
 	}
 
-	/** 把一个区块的 16×16 个像素写进页贴图。 */
-	private static void paint(NativeImage image, int baseX, int baseY, int[] chunkColors) {
+	/**
+	 * 把一个区块的 {@value SinanConstants#CHUNK_SIZE}×{@value SinanConstants#CHUNK_SIZE} 个像素写进页贴图。
+	 *
+	 * <p><b>昼夜两张一趟写完。</b>坐标完全一样、只是颜色数组不同，合成一趟之后：外层循环、行基址、
+	 * 目标行 y 都只算一次，两张贴图的写又落在同一行上（缓存更友好）。这块是"填"里的大头
+	 * （见 {@code WorldMapScreen} 的分段计时：填 150~280 ms/秒，其中大头就是这个逐像素循环），
+	 * 少算一半索引就少一半开销。
+	 */
+	private static void paint(NativeImage dayImage, NativeImage nightImage, int baseX, int baseY,
+			int[] day, int[] night) {
 		for (int z = 0; z < CHUNK_SIZE; z++) {
 			int rowStart = z * CHUNK_SIZE;
+			int y = baseY + z;
 			for (int x = 0; x < CHUNK_SIZE; x++) {
-				image.setPixel(baseX + x, baseY + z, chunkColors[rowStart + x]);
+				int pixel = rowStart + x;
+				int targetX = baseX + x;
+				dayImage.setPixel(targetX, y, day[pixel]);
+				nightImage.setPixel(targetX, y, night[pixel]);
 			}
 		}
 	}
@@ -1150,21 +1218,25 @@ public final class WorldTilePages implements Closeable {
 	 * 粗档：同一批叶页的<b>更低像素密度</b>版本。
 	 *
 	 * <p>一页覆盖 1024 方块（= {@value #COARSE_PACK}×{@value #COARSE_PACK} 张叶页格位），贴图边长 =
-	 * 叶页边长 ÷ 方块每像素 × {@link #COARSE_PACK}：叶页 1 方块/像素 → 512×512；{@value #COARSE_TIER_2}
-	 * 档 2 方块/像素 → 512×512；{@value #COARSE_TIER_4} 档 4 方块/像素 → 256×256。
+	 * 叶页边长 ÷ 方块每像素 × {@link #COARSE_PACK}：叶页 1 方块/像素 → 512×512；{@value #COARSE_TIER_4}
+	 * 档 4 方块/像素 → 256×256；{@value #COARSE_TIER_8} 档 8 方块/像素 → 128×128。
 	 *
 	 * <p><b>让粗档落在叶页那套页网格上</b>：页范围、保护范围、填充顺序、坐标换算于是全部复用叶页那一套，
-	 * 只是"一格"由 {@link #COARSE_PACK}² 张叶页格位合成。三档是<b>同一份数据的 1× / 2× / 4× 降采样</b>
-	 * （见 {@link #fillCoarse}），相邻档只差 2 倍，切换时颜色与形状连续。
+	 * 只是"一格"由 {@link #COARSE_PACK}² 张叶页格位合成。三档是<b>同一份数据的 1× / 4× / 8× 降采样</b>
+	 * （见 {@link #fillCoarse}）。
+	 *
+	 * <p><b>为什么是 1/4/8 而不是 1/2/4</b>：粗档的像素数与"方块/像素"的平方成反比——密度翻一倍，
+	 * 同一片面积要填的像素只有四分之一。取 4/8 之后，缩出去同一屏的贴图与填充量比 2/4 省到
+	 * 1/4 与 1/16，档与档之间也因此不再需要靠"只差 2 倍"来躲接缝（代价是 1→4 那一次切档比原来显眼一点）。
 	 *
 	 * <p>粗页取色分两步（见 {@link #fillCoarse}）：先降采样更细那一档的同一块（纯内存读），没有才回落到
 	 * 按粗步长回世界采样——于是"缩小时已探索的区域"立刻可见，远处没有细层数据的地方也照样有内容。
 	 * 也因此<b>粗页不靠"把叶页缩下来"建出来</b>：缩得很小时一屏需要的叶页远超 {@link #MAX_PAGES}。
 	 */
-	static final int COARSE_TIER_2 = 2;
-
-	/** 更粗的那一档，见 {@link #COARSE_TIER_2}。 */
 	public static final int COARSE_TIER_4 = 4;
+
+	/** 更粗的那一档，见 {@link #COARSE_TIER_4}。 */
+	public static final int COARSE_TIER_8 = 8;
 
 	/** 一档的贴图边长（像素）：一页仍是 {@value #PAGE_BLOCKS} 方块，方块/像素 = 档。 */
 	private static int tierSize(int blocksPerPixel) {
