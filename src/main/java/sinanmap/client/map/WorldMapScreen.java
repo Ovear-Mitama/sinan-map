@@ -2341,7 +2341,7 @@ public final class WorldMapScreen extends Screen {
 			int pageZ = (int) cell;
 			// 最粗一档（4 方块/像素）时叶页整套停用：那时一屏 2300 多个页格位，叶页（一页 2 MB）纯属负担，
 			// 它只是给"缩回 2 档"备的降采样来源，而 2 档粗页填充在叶页缺失时会回落去世界采样
-			// （见 WorldTilePages#fillCoarse），照样出图。停用后少一类每秒在动的东西、显存也不再供两套。
+			// （见 CoarseTileCache#fillCoarse），照样出图。停用后少一类每秒在动的东西、显存也不再供两套。
 			// 2 档仍照常建叶页（半数粗像素能从叶页直接降采样，出图最快），缩回 2 档时按需重建。
 			if (coarse && terrainTier == WorldTilePages.COARSE_TIER_4) {
 				continue;
@@ -2546,7 +2546,7 @@ public final class WorldMapScreen extends Screen {
 
 	/**
 	 * 每张粗页每次最多推进多少个粗像素（分帧推进）：2 档一页 65536 像素约 16 批走完、4 档 16384 像素 4 批。
-	 * 像素按"一个区块占若干像素"整块取色（见 {@code WorldTilePages#fillCoarse}），一批的实际采样量有限。
+	 * 像素按"一个区块占若干像素"整块取色（见 {@code CoarseTileCache#fillCoarse}），一批的实际采样量有限。
 	 */
 	private static final int COARSE_PIXELS_PER_PAGE = 4096;
 
@@ -3056,7 +3056,7 @@ public final class WorldMapScreen extends Screen {
 					textures = tiles.coarse(currentLayer, terrainTier, pageX, pageZ);
 					created++;
 				}
-				// 还没画上任何地形的页是整页全透明的（见 WorldTilePages#fillCoarseEmpty），画它白费一次绑定 + 绘制。
+				// 还没画上任何地形的页是整页全透明的（见 CoarseTileCache#fillCoarseEmpty），画它白费一次绑定 + 绘制。
 				// 跳过的页照常填充，数据一到、第一块地形画上去，下一帧自然会被画出来。
 				if (!tiles.coarseHasRealTerrain(currentLayer, terrainTier, pageX, pageZ)) {
 					continue;
