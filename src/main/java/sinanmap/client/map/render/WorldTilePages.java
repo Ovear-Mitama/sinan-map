@@ -127,25 +127,11 @@ public final class WorldTilePages implements Closeable {
 	/** 常驻页：显存里有贴图，随时可画。 */
 	private final Map<Long, Page> resident = new LinkedHashMap<>(64, 0.75F, true);
 
-	/** 不允许被淘汰的页范围（当前视野加预取余量）；<b>只保护当前显示的那一层</b>，见 {@link #isProtected}。 */
-	private int protectedLayer = Integer.MAX_VALUE;
-	private int protectMinX = Integer.MAX_VALUE;
-	private int protectMinZ = Integer.MAX_VALUE;
-	private int protectMaxX = Integer.MIN_VALUE;
-	private int protectMaxZ = Integer.MIN_VALUE;
-
 	/**
-	 * 小地图那一屏要用的页。
-	 *
-	 * <p><b>不能并进上面那一份。</b>小地图是常驻 HUD，全屏地图打开时两者<b>同一帧都在渲染</b>、各自
-	 * 报一次范围。共用字段的话，后报的会顶掉前者的范围，另一边的页就变成"可以淘汰"（一屏几十页被自己
-	 * 挤掉、或小地图那几页每帧淘汰重建）。两份各自记着，{@link #isProtected} 命中任意一份就算保住。
+	 * 不允许被淘汰的页范围（当前视野加预取余量，以及小地图那一屏）——淘汰任何一页前都要先问它，
+	 * 见 {@link TileProtection}。
 	 */
-	private int minimapLayer = Integer.MAX_VALUE;
-	private int minimapMinX = Integer.MAX_VALUE;
-	private int minimapMinZ = Integer.MAX_VALUE;
-	private int minimapMaxX = Integer.MIN_VALUE;
-	private int minimapMaxZ = Integer.MIN_VALUE;
+	private final TileProtection protection = new TileProtection();
 
 	/** 一个区块 256 个像素的暂存，两张贴图各一份，免得每块都新建数组。 */
 	private final int[] dayPixels = new int[CHUNK_SIZE * CHUNK_SIZE];
@@ -1232,16 +1218,7 @@ public final class WorldTilePages implements Closeable {
 			shownBand = keyed;
 		}
 		shownLayer = layer;
-		// 每帧都会被调一次。值没变就没有任何事可做——重点是别让"每帧 × 常数开销"白花
-		if (keyed == protectedLayer && minX == protectMinX && minZ == protectMinZ
-				&& maxX == protectMaxX && maxZ == protectMaxZ) {
-			return;
-		}
-		protectedLayer = keyed;
-		protectMinX = minX;
-		protectMinZ = minZ;
-		protectMaxX = maxX;
-		protectMaxZ = maxZ;
+		protection.set(keyed, minX, minZ, maxX, maxZ);
 	}
 
 	/** 当前页仓库属于哪个世界的数据目录；见 {@link #ensureWorld(Path)}。 */
@@ -1268,39 +1245,12 @@ public final class WorldTilePages implements Closeable {
 	 * 所以判据是"两个矩形有没有重叠"——直接拿粗页坐标比会漏判，正在看的粗页就被自己挤掉、显存回收再重读。
 	 */
 	private boolean isProtectedCoarse(CoarsePage page) {
-		int lowX = page.pageX * COARSE_PACK;
-		int lowZ = page.pageZ * COARSE_PACK;
-		int highX = lowX + COARSE_PACK - 1;
-		int highZ = lowZ + COARSE_PACK - 1;
-		if (page.layer == protectedLayer
-				&& lowX <= protectMaxX && highX >= protectMinX
-				&& lowZ <= protectMaxZ && highZ >= protectMinZ) {
-			return true;
-		}
-		// 小地图那一屏的页同样要保住，见 #minimapLayer 那段的说明
-		return page.layer == minimapLayer
-				&& lowX <= minimapMaxX && highX >= minimapMinX
-				&& lowZ <= minimapMaxZ && highZ >= minimapMinZ;
+		return protection.overlapsCoarse(page.layer, page.pageX, page.pageZ);
 	}
 
+	/** 这一页在不在"不许被淘汰"的范围内（叶页判据；粗页见 {@link #isProtectedCoarse}）。 */
 	private boolean isProtected(Page page) {
-		return isProtected(page.layer(), page.pageX, page.pageZ);
-	}
-
-	/**
-	 * 页坐标 {@code (layer, pageX, pageZ)} 在不在"不许被淘汰"的范围内（<b>叶页</b>判据；粗页用
-	 * {@link #isProtectedCoarse}）。
-	 */
-	private boolean isProtected(int layer, int pageX, int pageZ) {
-		if (layer == protectedLayer
-				&& pageX >= protectMinX && pageX <= protectMaxX
-				&& pageZ >= protectMinZ && pageZ <= protectMaxZ) {
-			return true;
-		}
-		// 小地图那一屏的页同样要保住，见 #minimapLayer 那段的说明
-		return layer == minimapLayer
-				&& pageX >= minimapMinX && pageX <= minimapMaxX
-				&& pageZ >= minimapMinZ && pageZ <= minimapMaxZ;
+		return protection.containsLeaf(page.layer(), page.pageX, page.pageZ);
 	}
 
 	/**
@@ -1310,11 +1260,7 @@ public final class WorldTilePages implements Closeable {
 	 * {@link #isProtected} 会漏判。
 	 */
 	public void setMinimapProtectedRange(int layer, int minX, int minZ, int maxX, int maxZ) {
-		minimapLayer = keyLayer(layer);
-		minimapMinX = minX;
-		minimapMinZ = minZ;
-		minimapMaxX = maxX;
-		minimapMaxZ = maxZ;
+		protection.setMinimap(keyLayer(layer), minX, minZ, maxX, maxZ);
 	}
 
 	/** 对"未探明"区块做整轮重试的间隔。 */
