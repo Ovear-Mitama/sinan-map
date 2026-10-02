@@ -5,6 +5,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.joml.Matrix3x2fStack;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 
@@ -13,6 +15,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
@@ -25,6 +28,7 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.SpawnEggItem;
+import net.minecraft.world.level.block.state.BlockState;
 
 import sinanmap.common.SinanConstants;
 import sinanmap.common.hud.MinimapSettings;
@@ -69,6 +73,9 @@ import sinanmap.common.hud.ScreenRect;
  * {@link MinimapSettings#entityRadarHeightIndicator()}）。
  */
 public final class EntityRadar {
+
+	// 【临时诊断】见 backdropColorOf，定位后删除
+	private static final Logger LOGGER = LoggerFactory.getLogger(SinanConstants.MOD_ID);
 
 	/**
 	 * 每帧最多画几个（超出按水平距离取最近的）。
@@ -533,18 +540,39 @@ public final class EntityRadar {
 	/** 见 {@link #backdropColorOf}：下雨/雷雨时地图再压一档。 */
 	private static final float RAIN_DIM = 0.55F;
 
+	/** 见 {@link #backdropColorOf}：往下找"地图上看得见的那一格"时最多探这么多格。 */
+	private static final int SURFACE_SCAN_DEPTH = 3;
+
+	/** 见 {@link #backdropColorOf}：复用的可变坐标，避免每个图标每帧新建一个 {@code BlockPos}。 */
+	private static final BlockPos.MutableBlockPos backdropPos = new BlockPos.MutableBlockPos();
+
 	/**
-	 * 见 {@link #drawHeightIndicator}：该生物<b>脚下那一格</b>的地图色，<b>并按当前光照压暗</b>。
+	 * 见 {@link #drawHeightIndicator}：该生物脚下那格<b>地图色</b>，<b>并按当前光照压暗</b>。
 	 *
-	 * <p>为什么是"脚下一格"：生物站在空气里，正下方那格通常就是它踩着的地面；而"原版地图色"正是
-	 * "这块地方在地图上看起来是什么颜色"的官方口径。地图本身按当前光照合成，夜里/下雨会把整张图压下去
-	 * （天空光衰减越强越暗，天气再叠一档），把同一份衰减作用到取到的颜色上，"地图整体变暗"时判据就自然
-	 * 落到"该用白箭头"那一侧，不必逐个情形枚举。每帧每个图标一次方块读取加几次整数运算，开销可忽略。
+	 * <p><b>为什么不是简单的"脚下一格"</b>：地图取色用的是 {@code WORLD_SURFACE}——最上面那个非空气
+	 * 方块，而 {@code blockPosition().below()} 会漏掉"生物自己站进去的那半格"。雪原正是这种情形：地面是
+	 * <b>雪层</b>（只有几像素高）加底下的草/土，生物站在雪层里，它所在的那一格是雪，再往下数一格却是土。
+	 * 取到土就判成暗地形，于是"雪地一片白"却仍然画白箭头。所以这里与地图同口径：<b>从生物自己那一格开始
+	 * 往下找第一格非空气方块</b>。
+	 *
+	 * <p><b>为什么用地图色</b>：它正是"这块地方在地图上看起来是什么颜色"的官方口径。地图本身按当前光照
+	 * 合成，夜里/下雨会把整张图压下去（天空光衰减越强越暗，天气再叠一档），把同一份衰减作用到取到的颜色上，
+	 * "地图整体变暗"时判据就自然落到"该用白箭头"那一侧，不必逐个情形枚举。每帧每个图标一次方块读取加几次
+	 * 整数运算，开销可忽略。
 	 */
 	private static int backdropColorOf(Entity entity) {
 		var level = entity.level();
-		var below = entity.blockPosition().below();
-		int base = level.getBlockState(below).getMapColor(level, below).col;
+		BlockState surface = null;
+		int base = 0;
+		for (int i = 0; i <= SURFACE_SCAN_DEPTH; i++) {
+			backdropPos.set(entity.getBlockX(), entity.getBlockY() - i, entity.getBlockZ());
+			BlockState state = level.getBlockState(backdropPos);
+			if (!state.isAir()) {
+				surface = state;
+				base = state.getMapColor(level, backdropPos).col;
+				break;
+			}
+		}
 		float dim = 1.0F - Math.clamp(level.getSkyDarken() / SKY_DARKEN_MAX, 0.0F, 0.9F);
 		if (level.isRaining() || level.isThundering()) {
 			dim *= RAIN_DIM;
@@ -552,8 +580,21 @@ public final class EntityRadar {
 		int r = (int) (((base >> 16) & 0xFF) * dim);
 		int g = (int) (((base >> 8) & 0xFF) * dim);
 		int b = (int) ((base & 0xFF) * dim);
-		return 0xFF000000 | (r << 16) | (g << 8) | b;
+		int argb = 0xFF000000 | (r << 16) | (g << 8) | b;
+		// 【临时诊断】定位"白天雪地仍画白箭头"用，定位后删除
+		if (diagLeft > 0 && System.nanoTime() - diagLastNanos > 200_000_000L) {
+			diagLeft--;
+			diagLastNanos = System.nanoTime();
+			LOGGER.info("高度指示诊断 | 实体={} 方块={} 地图色=#{} 天空衰减={} dim={} 结果=#{} 判深={}",
+					entity.getType(), surface, Integer.toHexString(base), level.getSkyDarken(), dim,
+					Integer.toHexString(argb), isBrightColor(argb));
+		}
+		return argb;
 	}
+
+	// 【临时诊断】见 backdropColorOf，定位后删除
+	private static int diagLeft = 40;
+	private static long diagLastNanos;
 
 	/** 见 {@link #drawHeightIndicator}：按亮度判"亮地形"（整数运算，无浮点）。 */
 	private static boolean isBrightColor(int argb) {

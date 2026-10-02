@@ -2369,10 +2369,13 @@ public final class WorldMapScreen extends Screen {
 			long p0 = System.nanoTime();
 			TilePage page = tiles.page(currentLayer, pageX, pageZ);
 			long p1 = System.nanoTime();
-			// 粗页模式下这一句被 coarse 挡住（不再推进叶页游标，免得两套顺序叠在同帧"哪儿都在长"）；
-			// 页本身仍照建、照上传，缩回中等倍率时立刻能用。
-			if (!coarse && filledPages < maxFillingPerFrame && !colorProvider.isWarmSpent()
-					&& tiles.hasWork(page) && (tiles.started(page) || inFlight < maxFillingPages)) {
+			// 叶页一直喂到 2 档为止（4 档在上面就整页跳过了）：2 档的粗页有相当一部分像素是"从叶页降采样"
+			// （纯内存读），而叶页不喂就永远没有降采样来源，只能回世界采样——实测就是这样："降采样=0px、
+			// 回落 39 万像素/秒（312ms/秒）"，档=2 因此比设计慢一大截。以前这里按 coarse 整段挡住，是怕
+			// 两套推进顺序在同一帧"哪儿都在长"；现在两个档位共用同一套"由中心向外"，不会再出现两种走向。
+			if (terrainTier != WorldTilePages.COARSE_TIER_4 && filledPages < maxFillingPerFrame
+					&& !colorProvider.isWarmSpent() && tiles.hasWork(page)
+					&& (tiles.started(page) || inFlight < maxFillingPages)) {
 				if (tiles.fillSome(page, chunksPerVisit)) {
 					filledPages++;
 				}

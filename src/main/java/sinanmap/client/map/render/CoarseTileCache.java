@@ -136,6 +136,9 @@ final class CoarseTileCache {
 		private boolean dirtyDay;
 		private boolean dirtyNight;
 
+		/** 上一次上屏的时刻（0 = 建页那次整张上传之后还没传过），见 {@link #uploadCoarse}。 */
+		private long lastUploadNanos;
+
 		private CoarsePage(TileVariants textures, int layer, int pixelHeight, int blocksPerPixel,
 				int pageX, int pageZ) {
 			this.textures = textures;
@@ -629,13 +632,22 @@ final class CoarseTileCache {
 		return count == 0 ? 0 : (a / count) << 24 | (r / count) << 16 | (g / count) << 8 | b / count;
 	}
 
+	/** 粗页两次上屏之间至少隔这么久，见 {@link #uploadCoarse}。 */
+	private static final long COARSE_UPLOAD_INTERVAL_NANOS = 80_000_000L;
+
 	/**
 	 * 把一张粗页改动过的像素传上显存。
 	 *
-	 * <p>与叶页的 {@code upload} 分开：粗页最大 512 KB，走"填一点就传"更简单，调用方按每帧上传名额限流。
+	 * <p>与叶页的 {@code upload} 分开：粗页的像素由 {@code fillCoarse} 写，调用方按每帧上传名额限流。
 	 *
 	 * <p><b>只传当前要画的那一张</b>：以前两张无条件都传等于上传带宽白翻一倍。没传的那张不标"传过"，
 	 * 等天色需要时再补传，结果一致。
+	 *
+	 * <p><b>还要限"多久传一次"。</b>粗页一屏只有几十张，而每张都得<b>整张</b>重传（2 档一张就有 1 MB）：
+	 * 填一次就传一次的话，一屏粗页会以几十个像素为单位一格一格显影——这正是用户看到的"撕裂感很强"
+	 * （实测每秒 183~211 次粗页上传、回落到世界采样 39~95 万像素）。改成两次之间至少隔
+	 * {@value #COARSE_UPLOAD_INTERVAL_NANOS} 纳秒：一次至少显影 80 毫秒的填充量，成片出现。
+	 * 页<b>填完</b>时不受这条限制，最后一块立刻上屏。
 	 *
 	 * @return 有没有真的传过东西
 	 */
@@ -643,6 +655,12 @@ final class CoarseTileCache {
 			boolean wantDay, boolean wantNight) {
 		CoarsePage page = coarse.get(host.coarseKey(layer, blocksPerPixel, pageX, pageZ));
 		if (page == null) {
+			return false;
+		}
+		// 还在铺、而且刚传过：先攒着（建页时那次整张上传不算，那时 lastUploadNanos 还是 0）
+		long nowNanos = System.nanoTime();
+		if (page.remaining > 0 && page.lastUploadNanos != 0L
+				&& nowNanos - page.lastUploadNanos < COARSE_UPLOAD_INTERVAL_NANOS) {
 			return false;
 		}
 		boolean uploaded = false;
@@ -655,6 +673,10 @@ final class CoarseTileCache {
 			page.textures.night().upload();
 			page.dirtyNight = false;
 			uploaded = true;
+		}
+		if (uploaded) {
+			// 记下这次上屏的时刻：下一次要再隔一个间隔（见本方法说明）
+			page.lastUploadNanos = nowNanos;
 		}
 		return uploaded;
 	}
