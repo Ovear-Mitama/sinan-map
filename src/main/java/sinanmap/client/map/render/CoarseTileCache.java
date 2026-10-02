@@ -59,8 +59,23 @@ final class CoarseTileCache {
 	private final int[] dayPixels;
 	private final int[] nightPixels;
 
-	/** 粗页扫描一整遍之后，隔多久再补一次没填上的像素（与叶页的 {@code RETRY_NANOS} 同一个意思）。 */
+	/**
+	 * 粗页扫描一整遍之后，隔多久再补一次没填上的像素（与叶页的 {@code RETRY_NANOS} 同一个意思）。
+	 *
+	 * <p>这一遍<b>填上了东西</b>时就用这个值；一个都没填上（剩下的像素全是"还没定论"）则按
+	 * {@link #COARSE_RETRY_MAX_NANOS} 逐次翻倍退避——见 {@link #fillCoarse} 末尾。
+	 */
 	private static final long COARSE_RETRY_NANOS = 1_500_000_000L;
+
+	/**
+	 * "空扫"退避的上限。
+	 *
+	 * <p>实测：一屏粗页里总有那么些像素永远问不出结论（区块在世界存档里没有、又没被加载），它们每
+	 * {@code 1.5s} 被整批重问一次——200 次/秒、每次几千像素，合计<b>每秒 40~65 万像素、370~460 毫秒</b>
+	 * 花在"再问一遍、还是没结论"上（占一个核的 40%，而画面早就铺完了）。翻倍退避把它压到可忽略：
+	 * 真有新数据时 {@link #markDirty} 会把 {@code retryAtNanos} 清 0，那一页立刻重扫，不会变迟钝。
+	 */
+	private static final long COARSE_RETRY_MAX_NANOS = 30_000_000_000L;
 
 	/** 粗页仓库（键 = 层 + 档 + 页坐标，页坐标与叶页同一套）。 */
 	private final Map<Long, CoarsePage> coarse = new LinkedHashMap<>(32, 0.75F, true);
@@ -123,8 +138,11 @@ final class CoarseTileCache {
 		private int remaining;
 		/** 页内推进到第几步（步到像素的映射见 {@link #coarseSweepOrder}）；走到末尾绕回 0。 */
 		private int fillCursor;
-		/** 下次允许重扫的时刻：扫完一遍还有没填上的就往后推 {@value #COARSE_RETRY_NANOS}，否则"没数据"的粗页每帧空扫、把预算吃光。 */
+		/** 下次允许重扫的时刻：扫完一遍还有没填上的就往后推，否则"没数据"的粗页每帧空扫、把预算吃光。 */
 		private long retryAtNanos;
+
+		/** 下一次重扫的间隔：连着空扫就翻倍退避，见 {@link #COARSE_RETRY_MAX_NANOS}。 */
+		private long retryNanos = COARSE_RETRY_NANOS;
 		/** 这一轮扫掠已填上的像素数（扫完一圈清零），只为回答"这一轮有没有进展"。 */
 		private int sweepPainted;
 		/** 上一轮扫掠<b>一个像素都没填上</b>（剩下的全是"还没定论"）：扫完一圈没进展就不再算"正在加载"，但依旧定期重扫。 */
@@ -446,7 +464,15 @@ final class CoarseTileCache {
 				// 允许上屏：这一遍能填的都填上了，整页一起显影（见 CoarsePage#sweepDone）
 				page.sweepDone = true;
 				page.sweepPainted = 0;
-				page.retryAtNanos = System.nanoTime() + COARSE_RETRY_NANOS;
+				// 这一遍一块都没填上（剩下的全是"还没定论"）：退避翻倍，别每 1.5 秒把同样的像素重问一遍
+				// ——实测那是每秒 40~65 万像素、370~460 毫秒的纯浪费（见 COARSE_RETRY_MAX_NANOS）。
+				// 有进展就退回基准间隔；真有新数据时 markDirty 会直接把它清 0。
+				if (page.stalled) {
+					page.retryNanos = Math.min(page.retryNanos * 2, COARSE_RETRY_MAX_NANOS);
+				} else {
+					page.retryNanos = COARSE_RETRY_NANOS;
+				}
+				page.retryAtNanos = System.nanoTime() + page.retryNanos;
 			}
 			if (page.filled[index]) {
 				// 已经填过的像素：只是查一下数组，不计预算
@@ -753,10 +779,11 @@ final class CoarseTileCache {
 			}
 		}
 		if (invalidated) {
-			// 有新数据落进这一页：立刻允许重扫，别等冷却期；同时把"停住了"清掉
+			// 有新数据落进这一页：立刻允许重扫，别等冷却期；同时把"停住了"与翻倍退避一起清掉
 			// ——这一页又有真活干了，加载指示该照常出现
 			page.stalled = false;
 			page.retryAtNanos = 0L;
+			page.retryNanos = COARSE_RETRY_NANOS;
 		}
 	}
 
