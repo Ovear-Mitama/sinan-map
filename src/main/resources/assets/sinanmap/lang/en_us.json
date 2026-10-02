@@ -19,7 +19,6 @@
 	"screen.sinanmap.world_map.dimension_search": "Search dimension…",
 	"screen.sinanmap.world_map.tip.layer": "Map layer (drag to adjust)",
 	"screen.sinanmap.world_map.tip.perf": "Performance: how much Sinan Map itself uses",
-	"screen.sinanmap.world_map.perf.memory": "Heap %s/%s MB",
 	"screen.sinanmap.world_map.perf.storage": "Data %s",
 	"screen.sinanmap.world_map.perf.cpu": "%s ms/f · %s FPS",
 	"screen.sinanmap.world_map.perf.gpu": "Tiles %s · %s",

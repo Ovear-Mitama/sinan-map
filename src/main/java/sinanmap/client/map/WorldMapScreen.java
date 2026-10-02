@@ -471,7 +471,7 @@ public final class WorldMapScreen extends Screen {
 	 */
 	private static final int PERF_PANEL_WIDTH = 116;
 	private static final int PERF_ROW_HEIGHT = 9;
-	private static final int PERF_PANEL_ROWS = 6;
+	private static final int PERF_PANEL_ROWS = 5;
 
 	/** 性能面板内部的上下边距（左内边距在绘制处写死为 3）。 */
 	private static final int PERF_PAD_Y = 2;
@@ -4346,7 +4346,7 @@ public final class WorldMapScreen extends Screen {
 	}
 
 	/**
-	 * 性能面板：司南自己的占用情况（内存 / 存储 / 每帧耗时 / 贴图 / 加载 / 线程）。
+	 * 性能面板：司南自己的占用情况（存储 / 每帧耗时 / 贴图 / 加载 / 线程）。
 	 *
 	 * <p><b>只有点开才算</b>：面板关着时这个方法第一行就返回——连"多少页、占多少显存"都不问。
 	 * 这些统计要遍历缓存，做成后台每秒跑一次就等于"为了看性能反而变卡"（用户明确要求）。
@@ -4356,12 +4356,9 @@ public final class WorldMapScreen extends Screen {
 		if (!perfOpen) {
 			return;
 		}
-		Runtime runtime = Runtime.getRuntime();
 		double perFrameMillis = framesThisSecond == 0 ? 0.0
 				: (fillNanosSum + drawNanosSum) / (double) framesThisSecond / 1.0e6;
 		String[] lines = {
-				text("perf.memory", (runtime.totalMemory() - runtime.freeMemory()) >> 20,
-						runtime.maxMemory() >> 20),
 				text("perf.storage", megabytes(mapStorageBytes())),
 				text("perf.cpu", "%.2f".formatted(perFrameMillis), framesThisSecond),
 				text("perf.gpu", tiles.residentPageCount(), megabytes(tiles.estimatedTextureBytes())),
