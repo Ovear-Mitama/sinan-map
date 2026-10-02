@@ -328,7 +328,7 @@ public final class WorldTilePages implements Closeable {
 			if (colors.caveSliceCovers(chunkX, chunkZ, pixelHeight, layer)) {
 				continue;
 			}
-			page.filled[index] = false;
+			page.undecided(index);
 			// 像素<b>先留着</b>（不涂黑），只把"这一格的数据还算不算数"归零：重试轮转与补画都用
 			// {@code hasTerrain} 判断"要不要重问"。{@code painted} 仍是 true，于是重画时若新高度那边
 			// 没洞可画，就继续留着旧像素、不会闪黑（见 fillOne）。
@@ -564,14 +564,14 @@ public final class WorldTilePages implements Closeable {
 				// 这一格像素里现在还有地形（典型是洞穴换高度时留下的上一格那层）：新高度这边没有洞
 				// 可画，也<b>不能</b>当场涂成未探明——那会在一页里同时闪出一片黑。
 				// 留着旧像素只当"这一轮处理完了"：数据真到了，重试轮转下次就会把它重画成新的。
-				page.filled[index] = true;
+				page.decided(index);
 				return true;
 			}
 			// 确定没有数据、这里本来也没有像素：这一格就画成未探明
 			frameHoles++;
 		}
 		writeChunk(page, index, hasData);
-		page.filled[index] = true;
+		page.decided(index);
 		framePaints++;
 		return true;
 	}
@@ -806,7 +806,7 @@ public final class WorldTilePages implements Closeable {
 		// "已经加载好的地方时不时闪黑块"。补画按块轮转、数据一到就画（见 fillSome），旧地形多留一两帧更好。
 		//
 		// 不要动 fillCursor：归零等于把游标后面那些块整页重走一遍；这一块由 pending 单独记着。
-		page.filled[index] = false;
+		page.undecided(index);
 		page.markPending(index);
 		return true;
 	}
@@ -817,16 +817,25 @@ public final class WorldTilePages implements Closeable {
 	 * <p><b>只传要用的那一张。</b>一页是"白天 + 夜晚"两张各 1 MB，任何时刻只画其中一张。以前无条件
 	 * 都传，铺图时每秒要往显存灌两百多 MB——纯浪费显存带宽，也是"地图一加载就卡"的一大来源。
 	 *
-	 * <p><b>页还在"陆续来数据"时先不传。</b>一页贴图是 512×512 = 1 MB，而数据是一块一块到的：
-	 * 每来一块就传一次的话，屏幕上一页会以 16×16 方块为单位一格一格显影——"撕裂感"主要就来自这里，
-	 * 而且填一页要传几十次 1 MB。改成"这一页静了 {@value #UPLOAD_SETTLE_NANOS} 纳秒、或已经没有
-	 * 待办的块"才传：一页以较大的步子出现，传的次数降一个量级，屏幕上的格子感也随之消失。
+	 * <p><b>上屏的单位是"小块"，不是一个区块</b>（见 {@link TilePage#SUB_SIDE}）。一页按 4×4 个区块分成
+	 * 8×8 个小块，一小块里的块<b>都问出结果</b>了才允许上屏。以前是"来一块传一次"，屏幕上一页就以
+	 * 16×16 方块为单位一格一格显影，于是同一页里东一块西一块、还在移动中互相覆盖（填一页还要传
+	 * 几十次 1 MB）。改成攒够一小块再传：一页以 64×64 方块为单位成片出现，传的次数降一个量级。
+	 *
+	 * <p>凑不齐时用"安静了 {@value #UPLOAD_SETTLE_NANOS} 纳秒"兜底（某一块的数据卡住了，也不能让已经
+	 * 画好的部分一直不上屏）。
 	 *
 	 * @return 有没有真的传过东西
 	 */
 	public boolean upload(TilePage page, boolean wantDay, boolean wantNight) {
-		if (!settled(page)) {
+		if (!hasUploadWork(page) || !uploadAllowed(page)) {
 			return false;
+		}
+		if (page.pendingUpload) {
+			// 这一刻堆里的像素整体算"变过"：两张都标脏，谁要画就传谁（另一张留到需要它的时候再传）
+			page.dirtyDay = true;
+			page.dirtyNight = true;
+			page.pendingUpload = false;
 		}
 		boolean uploaded = false;
 		if (wantDay && page.dirtyDay) {
@@ -839,21 +848,29 @@ public final class WorldTilePages implements Closeable {
 			page.dirtyNight = false;
 			uploaded = true;
 		}
+		if (uploaded) {
+			// 这一轮的许可用掉了：下次要攒到"又有一小块凑齐"，或再安静够时间
+			page.uploadReady = false;
+		}
 		return uploaded;
 	}
 
+	/** 这一页有没有"还没上屏的东西"（新写的像素，或上回只传了白天那张、夜里那张还欠着）。 */
+	private static boolean hasUploadWork(TilePage page) {
+		return page.pendingUpload || page.dirtyDay || page.dirtyNight;
+	}
+
 	/**
-	 * 这一页"静下来了没有"：没有待办的块（该问的都问完了），或者已经安静了
-	 * {@value #UPLOAD_SETTLE_NANOS} 纳秒（数据暂时不会再来）。
+	 * 现在允不允许这一页上屏：<b>至少一个小块凑齐了</b>，或者已经安静了 {@value #UPLOAD_SETTLE_NANOS} 纳秒。
 	 *
 	 * <p>后半条是兜底：万一某一块的请求卡住很久，也不能让已经画好的那部分一直不上屏。
 	 */
-	private static boolean settled(TilePage page) {
-		return page.pendingCount == 0
+	private static boolean uploadAllowed(TilePage page) {
+		return page.uploadReady
 				|| System.nanoTime() - page.paintedAtNanos >= UPLOAD_SETTLE_NANOS;
 	}
 
-	/** 一页在"还在变化"时最多憋多久不上传，见 {@link #settled}。 */
+	/** 一页在"还在变化"时最多憋多久不上传，见 {@link #uploadAllowed}。 */
 	private static final long UPLOAD_SETTLE_NANOS = 250_000_000L;
 
 	/**
@@ -933,8 +950,9 @@ public final class WorldTilePages implements Closeable {
 		int baseX = index % PAGE_CHUNKS * CHUNK_SIZE;
 		int baseY = index / PAGE_CHUNKS * CHUNK_SIZE;
 		page.loaded = true;
-		page.dirtyDay = true;
-		page.dirtyNight = true;
+		// 不在这里标脏：什么时候允许上屏由"小块凑齐没有"决定（见 upload）。这里只记"有像素还没上屏"
+		// 与最后一次写入的时刻（安静时间的判据）。
+		page.pendingUpload = true;
 		page.paintedAtNanos = System.nanoTime();
 		// 这一叶变了：覆盖它的粗页要重建（缩小时画的就是粗页）
 		coarseCache.markDirty(page.layer(), page.pageX, page.pageZ, index);

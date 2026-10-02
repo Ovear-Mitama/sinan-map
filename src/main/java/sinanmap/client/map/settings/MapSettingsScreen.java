@@ -201,6 +201,12 @@ public final class MapSettingsScreen extends Screen {
 	/** 是否正处于"重置设置"的确认态（这一态下只画确认框）。 */
 	private boolean confirmingReset;
 
+	/** 确认框那两颗按钮：每帧要一起设淡入进度（它们与底框、文字是两套绘制路径，得手动对齐）。 */
+	private final List<SinanButton> confirmButtons = new ArrayList<>();
+
+	/** 确认框出现的时刻（0 = 已经不用动画了），见 {@link #resetConfirmFade}。 */
+	private long resetConfirmNanos;
+
 	/** 标题最右侧的全局搜索框（自绘，样式与 x/y 输入框同一套）。 */
 	private SinanTextField searchBox;
 	private String searchQuery = "";
@@ -272,6 +278,12 @@ public final class MapSettingsScreen extends Screen {
 		layout();
 		ensureSearchBox();
 		rebuild();
+		// 背后的世界地图不是"当前界面"，窗口尺寸变化时收不到事件，但它要被当背景画、按钮位置也按
+		// width/height 算——这里替它同步一次。
+		// init 在窗口尺寸变化时会被重新调用，所以这一句就够，不用另外盖 resize。
+		if (parent instanceof WorldMapScreen map) {
+			map.updateSize(width, height);
+		}
 	}
 
 	/** 建（或重新摆放）标题最右侧的全局搜索框。 */
@@ -320,6 +332,7 @@ public final class MapSettingsScreen extends Screen {
 		entries.clear();
 		pending.clear();
 		fixedWidgets.clear();
+		confirmButtons.clear();
 		scroll = 0;
 		scrollTarget = 0;
 		lastScrollNanos = 0L;
@@ -415,14 +428,14 @@ public final class MapSettingsScreen extends Screen {
 	/** "重置设置"的确认框：返回（红）/ 重置（红，破坏性）两颗并排按钮，宽度同样与一列对齐。 */
 	private void buildResetConfirm() {
 		int y = height / 2 + 20;
-		fixedWidgets.add(addRenderableWidget(new SinanButton(leftX, y,
+		confirmButtons.add(addConfirmButton(new SinanButton(leftX, y,
 				columnWidth, BOTTOM_BUTTON_HEIGHT,
 				Component.translatable("screen.sinanmap.map_settings.back").withColor(COLOR_CANCEL),
 				() -> {
 					confirmingReset = false;
 					rebuild();
 				})));
-		fixedWidgets.add(addRenderableWidget(new SinanButton(rightX, y,
+		confirmButtons.add(addConfirmButton(new SinanButton(rightX, y,
 				columnWidth, BOTTOM_BUTTON_HEIGHT,
 				Component.translatable("screen.sinanmap.map_settings.reset.confirm").withColor(COLOR_CANCEL),
 				() -> {
@@ -431,6 +444,33 @@ public final class MapSettingsScreen extends Screen {
 					page = PAGE_HOME;
 					rebuild();
 				})));
+	}
+
+	/** 登记一颗确认框按钮：进控件树，同时记进 {@link #confirmButtons}（每帧要一起设淡入进度）。 */
+	private SinanButton addConfirmButton(SinanButton button) {
+		fixedWidgets.add(addRenderableWidget(button));
+		return button;
+	}
+
+	/** 确认框的弹出时长（与切页同一量级：再短就像"跳出来"了）。 */
+	private static final long RESET_CONFIRM_NANOS = 160_000_000L;
+
+	/**
+	 * "重置设置"确认框的淡入进度（0~1）：<b>底框、文字、两颗按钮用同一个进度</b>，整块一起显出来。
+	 *
+	 * <p>之前只有底框与文字是当场画的，按钮是控件、不受任何进度影响，于是"按钮先跳出来、底框后到"。
+	 */
+	private float resetConfirmFade() {
+		if (resetConfirmNanos == 0L) {
+			return 1.0F;
+		}
+		long elapsed = System.nanoTime() - resetConfirmNanos;
+		if (elapsed >= RESET_CONFIRM_NANOS) {
+			return 1.0F;
+		}
+		float t = elapsed / (float) RESET_CONFIRM_NANOS;
+		// smoothstep：两头慢中间快，比线性更像"弹出来"
+		return t * t * (3.0F - 2.0F * t);
 	}
 
 	/** 换页：重搭上一页控件，并让新内容从右侧滑进来。 */
@@ -468,6 +508,8 @@ public final class MapSettingsScreen extends Screen {
 						Component.translatable("screen.sinanmap.map_settings.reset"),
 						() -> {
 							confirmingReset = true;
+							// 确认框整块淡入（与切页、浮层同一套观感），见 resetConfirmFade
+							resetConfirmNanos = System.nanoTime();
 							rebuild();
 						}),
 				null);
@@ -930,7 +972,11 @@ public final class MapSettingsScreen extends Screen {
 		applyTransforms();
 		// 确认态：先把确认框的底铺上，再让按钮画在最上面
 		if (confirmingReset) {
-			drawResetConfirmBox(graphics);
+			float fade = resetConfirmFade();
+			for (SinanButton button : confirmButtons) {
+				button.setFade(fade);
+			}
+			drawResetConfirmBox(graphics, fade);
 			super.extractRenderState(graphics, mouseX, mouseY, partialTick);
 			return;
 		}
@@ -989,19 +1035,23 @@ public final class MapSettingsScreen extends Screen {
 		return null;
 	}
 
-	/** 确认框的底与两行文字（按钮由 {@link #buildResetConfirm()} 建成真正的控件，画在它上面）。 */
-	private void drawResetConfirmBox(GuiGraphicsExtractor graphics) {
+	/**
+	 * 确认框的底与两行文字（按钮由 {@link #buildResetConfirm()} 建成真正的控件，画在它上面）。
+	 *
+	 * @param fade 整块淡入进度，与那两颗按钮用的是同一个值（见 {@link #resetConfirmFade}）
+	 */
+	private void drawResetConfirmBox(GuiGraphicsExtractor graphics, float fade) {
 		int boxWidth = Math.min(260, width - 40);
 		int boxHeight = font.lineHeight * 2 + 34;
 		int x = (width - boxWidth) / 2;
 		int y = height / 2 - boxHeight / 2 - 10;
-		graphics.fill(x, y, x + boxWidth, y + boxHeight, 0xE8101014);
-		graphics.fill(x, y, x + boxWidth, y + 1, 0x60FFFFFF);
-		graphics.fill(x, y + boxHeight - 1, x + boxWidth, y + boxHeight, 0x60FFFFFF);
+		graphics.fill(x, y, x + boxWidth, y + boxHeight, SinanStyle.fade(0xE8101014, fade));
+		graphics.fill(x, y, x + boxWidth, y + 1, SinanStyle.fade(0x60FFFFFF, fade));
+		graphics.fill(x, y + boxHeight - 1, x + boxWidth, y + boxHeight, SinanStyle.fade(0x60FFFFFF, fade));
 		graphics.centeredText(font, Component.translatable("screen.sinanmap.map_settings.reset.title"),
-				width / 2, y + 9, 0xFFFFFFFF);
+				width / 2, y + 9, SinanStyle.fade(0xFFFFFFFF, fade));
 		graphics.centeredText(font, Component.translatable("screen.sinanmap.map_settings.reset.message"),
-				width / 2, y + 9 + font.lineHeight + 2, 0xFFB4B4B4);
+				width / 2, y + 9 + font.lineHeight + 2, SinanStyle.fade(0xFFB4B4B4, fade));
 	}
 
 	/**

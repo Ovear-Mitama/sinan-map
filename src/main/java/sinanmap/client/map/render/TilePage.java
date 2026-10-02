@@ -29,8 +29,29 @@ public final class TilePage {
 	/** 一页里的区块数：与 {@link WorldTilePages#PAGE_CHUNKS} 配套，几张逐块的表都按它开。 */
 	static final int CHUNK_COUNT = WorldTilePages.PAGE_CHUNKS * WorldTilePages.PAGE_CHUNKS;
 
+	/**
+	 * 一次<b>上屏</b>的边长（区块）：{@value}×{@value} 个区块（= 64×64 方块）算一个"小块"。
+	 *
+	 * <p>贴图是 1 方块 1 像素，所以一个小块 = 贴图上 64×64 像素。数据是一块一块到的，若来一块就上屏一块，
+	 * 屏幕上就看得见"一格一格地长"（用户反馈）；攒成一个 64×64 的小块再上屏，观感是一块块地出现。
+	 * 一次显影的单位是 region 里的子纹理，而不是整页一起上屏。
+	 */
+	static final int SUB_SIDE = 4;
+
+	/** 一页里有几个"小块"（每轴 {@code PAGE_CHUNKS / SUB_SIDE} 个）。 */
+	static final int SUB_COUNT = WorldTilePages.PAGE_CHUNKS / SUB_SIDE * (WorldTilePages.PAGE_CHUNKS / SUB_SIDE);
+
 	/** 每个区块问过了没有（"有数据"与"确认没有数据"都算问过）。 */
 	final boolean[] filled = new boolean[CHUNK_COUNT];
+
+	/** 每个"小块"里已经问出结果的区块数；到齐 {@code SUB_SIDE²} 才算这一小块可以上屏。 */
+	final byte[] subDecided = new byte[SUB_COUNT];
+
+	/** 有像素写下了、还没传上显存（见 {@link WorldTilePages#upload}）。 */
+	boolean pendingUpload;
+
+	/** 至少有一个"小块"凑齐了：现在允许上屏（凑不齐时靠安静时间兜底，见 upload）。 */
+	boolean uploadReady;
 
 	/**
 	 * 这一块<b>画上的是地形</b>（而不是涂成"没有数据"的空洞）。
@@ -87,6 +108,36 @@ public final class TilePage {
 
 	/** 补画 {@link #pending} 的轮转游标：一块没到数据也不会挡住后面的块。 */
 	int pendingCursor;
+
+	/**
+	 * 这一块的结果到了（画上了地形、或确认没有数据）：记进 {@link #filled}，并推进它所属"小块"的进度；
+	 * 凑齐一小块就允许上屏，见 {@link #SUB_SIDE}。
+	 */
+	void decided(int index) {
+		if (filled[index]) {
+			return;
+		}
+		filled[index] = true;
+		if (++subDecided[subOf(index)] >= SUB_SIDE * SUB_SIDE) {
+			uploadReady = true;
+		}
+	}
+
+	/** 这一块的结果作废了（洞穴换高度、地形被改动）：下次问出结果时重新计入它那一小块。 */
+	void undecided(int index) {
+		if (!filled[index]) {
+			return;
+		}
+		filled[index] = false;
+		subDecided[subOf(index)]--;
+	}
+
+	/** 区块序号 {@code z * PAGE_CHUNKS + x} → 它属于第几个"小块"。 */
+	private static int subOf(int index) {
+		int side = WorldTilePages.PAGE_CHUNKS / SUB_SIDE;
+		return index / WorldTilePages.PAGE_CHUNKS / SUB_SIDE * side
+				+ index % WorldTilePages.PAGE_CHUNKS / SUB_SIDE;
+	}
 
 	/** 记下"这一块还没问出结果"。重复标记无副作用。 */
 	void markPending(int index) {
@@ -215,8 +266,11 @@ public final class TilePage {
 	 */
 	void reacquire() {
 		textures.reacquireGpu();
+		// 整张已经重传过一遍了：脏标记与"要上屏"的许可一起清掉，别再来一次
 		dirtyDay = false;
 		dirtyNight = false;
+		pendingUpload = false;
+		uploadReady = false;
 	}
 
 	/** 只回收显存，像素留着，见 {@link TileVariants#releaseGpu()}。 */

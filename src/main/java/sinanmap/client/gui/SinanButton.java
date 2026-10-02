@@ -19,9 +19,22 @@ public class SinanButton extends AbstractButton {
 
 	private final Runnable action;
 
+	/** 整块淡入进度（0~1，默认 1），见 {@link SinanStyle#fade(int, float)}。 */
+	private float fade = 1.0F;
+
 	public SinanButton(int x, int y, int width, int height, Component message, Runnable action) {
 		super(x, y, width, height, message);
 		this.action = action;
+	}
+
+	/**
+	 * 整块淡入进度（0~1，默认 1）：给"浮层展开时整块淡入"用。
+	 *
+	 * <p>浮层里除了按钮还有底框与文字，各自都要乘同一个进度，整块才会一起显出来，
+	 * 而不是底框还没出来、按钮先跳出来。
+	 */
+	public void setFade(float fade) {
+		this.fade = Math.clamp(fade, 0.0F, 1.0F);
 	}
 
 	@Override
@@ -38,19 +51,21 @@ public class SinanButton extends AbstractButton {
 		boolean active = isActive();
 		boolean hover = active && isHoveredOrFocused();
 
-		graphics.fill(x, y, x + w, y + h, hover ? SinanStyle.BACKGROUND_ACTIVE : SinanStyle.BACKGROUND);
+		graphics.fill(x, y, x + w, y + h,
+				SinanStyle.fade(hover ? SinanStyle.BACKGROUND_ACTIVE : SinanStyle.BACKGROUND, fade));
 		// 边框：常态就描一圈暗的，悬停变亮、聚焦最亮
 		if (isFocused()) {
-			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.BORDER_FOCUS);
+			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_FOCUS, fade));
 		} else if (hover) {
-			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.BORDER_HOVER);
+			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_HOVER, fade));
 		} else {
-			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.BORDER_IDLE);
+			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_IDLE, fade));
 		}
 
 		Font font = Minecraft.getInstance().font;
 		int color = active ? textColor(getMessage()) : SinanStyle.TEXT_INACTIVE;
-		graphics.centeredText(font, getMessage(), x + w / 2, y + (h - font.lineHeight + 1) / 2, color);
+		graphics.centeredText(font, getMessage(), x + w / 2, y + (h - font.lineHeight + 1) / 2,
+				SinanStyle.fade(color, fade));
 	}
 
 	@Override

@@ -697,6 +697,19 @@ public final class WorldMapScreen extends Screen {
 		}
 	}
 
+	/**
+	 * 别的界面（地图设置）把这张地图当背景画时，窗口尺寸变了要手动同步一次。
+	 *
+	 * <p>它不是"当前界面"，收不到 {@code resize}/{@code init}，而它的按钮位置、面板范围都是按
+	 * {@code width}/{@code height} 当场算的——不同步就会一直停在旧尺寸上，当背景画时还会连地形缩放都不对。
+	 */
+	public void updateSize(int width, int height) {
+		this.width = width;
+		this.height = height;
+		// 会重建搜索框 / 跳转框 / 层级框那几个控件（见 init），所以走同一条路
+		init();
+	}
+
 	@Override
 	public boolean isPauseScreen() {
 		return false;
@@ -2810,11 +2823,37 @@ public final class WorldMapScreen extends Screen {
 		// 缩得很小时前者会明显大于后者一开始是正常的（分帧在建），但差值一直收不回来就是有问题。
 		// 粗页的一格 = COARSE_PACK×COARSE_PACK 张叶页格位，所以按粗页坐标算。
 		int pack = WorldTilePages.COARSE_PACK;
-		int coarseVisible = (Math.floorDiv(viewMaxX, pack) - Math.floorDiv(viewMinX, pack) + 1)
-				* (Math.floorDiv(viewMaxZ, pack) - Math.floorDiv(viewMinZ, pack) + 1);
+		int packMinX = Math.floorDiv(viewMinX, pack);
+		int packMinZ = Math.floorDiv(viewMinZ, pack);
+		int packMaxX = Math.floorDiv(viewMaxX, pack);
+		int packMaxZ = Math.floorDiv(viewMaxZ, pack);
+		int coarseVisible = (packMaxX - packMinX + 1) * (packMaxZ - packMinZ + 1);
+		// 【诊断】没建出来的那些粗页<b>为什么</b>没建：分"本来就没数据"与"有数据却没轮到"两种。
+		// 后者一直不降就是真的卡住了（新建额度/预算被别处吃光），前者是正常省事（见 coarseMayHaveData）。
+		// 每秒算一次、只扫视野内那几十到两百个格位，代价可忽略。
+		int missingWithData = 0;
+		int missingNoData = 0;
+		int builtUnfinished = 0;
+		if (coarseMode()) {
+			for (int pz = packMinZ; pz <= packMaxZ; pz++) {
+				for (int px = packMinX; px <= packMaxX; px++) {
+					if (tiles.findCoarse(currentLayer, terrainTier, px, pz) == null) {
+						if (coarseMayHaveData(px, pz)) {
+							missingWithData++;
+						} else {
+							missingNoData++;
+						}
+					} else if (tiles.coarseUnfinished(currentLayer, terrainTier, px, pz)) {
+						builtUnfinished++;
+					}
+				}
+			}
+		}
 		LOGGER.info("世界地图填充 | 视野内页={} | 档={} 方块每像素 粗页模式={} 可见粗页={} 已建粗页={}"
+						+ " | 粗页明细 未建有数据={} 未建无数据={} 负表={} 已建未铺完={}"
 						+ " | 地形块={} 空洞={} 还没问={} | 夜色={} 层={}",
 				pages, terrainTier, coarseMode(), coarseVisible, tiles.coarseCount(terrainTier),
+				missingWithData, missingNoData, coarseNoData.size(), builtUnfinished,
 				terrain, holes, undecided, nightAlpha(), describeLayer(currentLayer));
 	}
 

@@ -51,30 +51,52 @@ final class TileSweepOrder {
 		return order;
 	}
 
+	/** 一"小块"的边长（区块）：与 {@link TilePage#SUB_SIDE} 同一个值，也就是<b>一次上屏的单位</b>。 */
+	static final int GROUP_CHUNKS = TilePage.SUB_SIDE;
+
 	/**
-	 * 粗页：<b>区块优先、区块内像素连续</b>。
+	 * 粗页：<b>按"小块"（{@value #GROUP_CHUNKS}×{@value #GROUP_CHUNKS} 个区块）从页中心一圈圈向外</b>，
+	 * 小块内部再按"区块优先、区块内像素连续"走。
 	 *
-	 * <p>页与页之间仍是"固定坐标顺序、不看朝向"，与叶页同一口径。
+	 * <p><b>为什么也要同心圈。</b>以前是整页按"区块列"顺序扫（先一列区块从上到下，再右边一列），
+	 * 缩到最远时一屏全是粗页，看到的就是一条条<b>竖着长出来的带子</b>；而叶页那边是从中心向外，
+	 * 于是同一个地图上两种走向（用户反馈："有的只有一行加载，后面又变成列"）。现在两边都是"由中心向外"。
 	 *
-	 * <p><b>但页内顺序不能照抄叶页。</b>粗页一个像素覆盖多个方块，一个区块占 {@code pixelsPerChunk}² 个
-	 * 粗像素：按列优先扫会把同一区块的像素拉成一条竖线、跨区块时缓存反复失效。区块优先后同一区块的像素
-	 * 连续处理、换区块才失效一次，填充里那个区块缓存才真正起作用（{@code shadeChunkPair} 是重的）。
+	 * <p><b>小块内部仍是区块优先。</b>粗页一个像素覆盖多个方块，一个区块占 {@code pixelsPerChunk}² 个
+	 * 粗像素：按像素列优先扫会把同一区块的像素拉成一条竖线、跨区块时缓存反复失效。区块优先让同一区块的
+	 * 像素连续处理，填充里那个区块缓存（{@code shadeChunkPair} 是重的）才真正起作用。
+	 *
+	 * <p>小块取 {@value #GROUP_CHUNKS}×{@value #GROUP_CHUNKS} 个区块，正好与"一次上屏的单位"对齐：
+	 * 填满一小块才允许上屏，扫的顺序与看得见的顺序因此是一致的（一块块从中心铺开）。
 	 *
 	 * @param size           这一档的贴图边长（像素）
 	 * @param pixelsPerChunk 一个区块在这一档里占的像素边长（2 档 8、4 档 4）
 	 * @param chunksPerSide  一页管多少个区块（每轴）
 	 */
-	static int[] coarseChunkMajor(int size, int pixelsPerChunk, int chunksPerSide) {
+	static int[] coarseCenterOut(int size, int pixelsPerChunk, int chunksPerSide) {
 		int[] order = new int[size * size];
+		int groupsPerSide = chunksPerSide / GROUP_CHUNKS;
+		int center = groupsPerSide / 2;
 		int step = 0;
-		for (int cx = 0; cx < chunksPerSide; cx++) {
-			for (int cz = 0; cz < chunksPerSide; cz++) {
-				// 区块内像素整体走完，保证同一区块的像素紧挨着（缓存只在换区块时失效）
-				for (int pz = 0; pz < pixelsPerChunk; pz++) {
-					for (int px = 0; px < pixelsPerChunk; px++) {
-						int pixelX = cx * pixelsPerChunk + px;
-						int pixelZ = cz * pixelsPerChunk + pz;
-						order[step++] = pixelZ * size + pixelX;
+		for (int ring = 0; step < order.length; ring++) {
+			for (int groupZ = 0; groupZ < groupsPerSide; groupZ++) {
+				for (int groupX = 0; groupX < groupsPerSide; groupX++) {
+					if (Math.max(Math.abs(groupX - center), Math.abs(groupZ - center)) != ring) {
+						continue;
+					}
+					// 这一"小块"里的区块：行优先（与叶页同一口径），块内像素也是行优先、整块走完再换区块
+					for (int cz = 0; cz < GROUP_CHUNKS; cz++) {
+						int chunkZ = groupZ * GROUP_CHUNKS + cz;
+						for (int cx = 0; cx < GROUP_CHUNKS; cx++) {
+							int chunkX = groupX * GROUP_CHUNKS + cx;
+							for (int pz = 0; pz < pixelsPerChunk; pz++) {
+								int pixelZ = chunkZ * pixelsPerChunk + pz;
+								for (int px = 0; px < pixelsPerChunk; px++) {
+									int pixelX = chunkX * pixelsPerChunk + px;
+									order[step++] = pixelZ * size + pixelX;
+								}
+							}
+						}
 					}
 				}
 			}

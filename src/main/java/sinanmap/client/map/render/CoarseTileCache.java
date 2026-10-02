@@ -158,11 +158,11 @@ final class CoarseTileCache {
 	}
 
 	/**
-	 * 粗页填充顺序（每档一张）：走向与"为什么不照抄叶页"写在
-	 * {@link TileSweepOrder#coarseChunkMajor} 那里——页内的推进顺序全工程只此一处。
+	 * 粗页填充顺序（每档一张）：<b>按"小块"从页中心向外</b>，走向与理由写在
+	 * {@link TileSweepOrder#coarseCenterOut} 那里——页内的推进顺序全工程只此一处。
 	 */
-	private static final int[] COARSE_SWEEP_2 = buildCoarseChunkMajor(WorldTilePages.COARSE_TIER_2);
-	private static final int[] COARSE_SWEEP_4 = buildCoarseChunkMajor(WorldTilePages.COARSE_TIER_4);
+	private static final int[] COARSE_SWEEP_2 = buildCoarseSweep(WorldTilePages.COARSE_TIER_2);
+	private static final int[] COARSE_SWEEP_4 = buildCoarseSweep(WorldTilePages.COARSE_TIER_4);
 
 	/** 取某一档的填充顺序表，见 {@link #COARSE_SWEEP_2}。 */
 	private static int[] coarseSweepOrder(int blocksPerPixel) {
@@ -170,8 +170,8 @@ final class CoarseTileCache {
 	}
 
 	/** 生成某一档的顺序表：把参数折成"贴图边长 / 每区块像素 / 每边区块数"交给 {@link TileSweepOrder}。 */
-	private static int[] buildCoarseChunkMajor(int blocksPerPixel) {
-		return TileSweepOrder.coarseChunkMajor(
+	private static int[] buildCoarseSweep(int blocksPerPixel) {
+		return TileSweepOrder.coarseCenterOut(
 				WorldTilePages.coarseSize(blocksPerPixel),
 				tierPixelsPerChunk(blocksPerPixel),
 				// 一张粗页管 COARSE_PACK×COARSE_PACK 张叶页格位，区块数也跟着乘上来

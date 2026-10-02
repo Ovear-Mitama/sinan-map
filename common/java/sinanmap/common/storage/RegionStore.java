@@ -384,7 +384,12 @@ public final class RegionStore implements Closeable {
 		// （读侧就是这么读的），因此不 force 也不影响正确性；掉电最多丢掉最近几秒的地图数据。
 	}
 
-	/** 把 {@link #raw} 压进 {@link #compressed}，返回压缩后的字节数。 */
+	/**
+	 * 把 {@link #raw} 压进 {@link #compressed}，返回压缩后的字节数。
+	 *
+	 * <p>用默认档：实测真实存档里地表块中位 {@code 330 B/块}（原 2048，压到 16.1%），最快速档要多花两成
+	 * 空间（{@code 395 B}）才换到几倍速度，而写盘线程每秒只处理几百块、<b>从来不是瓶颈</b>。
+	 */
 	private int deflate(byte[] source) {
 		if (deflater == null) {
 			deflater = new Deflater(Deflater.DEFAULT_COMPRESSION);
