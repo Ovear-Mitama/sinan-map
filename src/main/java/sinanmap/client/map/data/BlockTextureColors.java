@@ -51,11 +51,14 @@ final class BlockTextureColors {
 	private static final int FALLBACK = TextureAverage.FALLBACK;
 
 	/**
-	 * 原版两种流体的贴图名：流体不是方块模型，{@code collectParts} 取不到朝上的面，只能点名；
-	 * 其它模组流体取不到名字，由调用方退回 {@code MapColor}，不会崩。
+	 * 原版<b>流体与火</b>的贴图名：它们没有"朝上那一面"的方块模型可查（流体不走方块模型；火是几片
+	 * 竖直的十字面，{@code collectParts} 取不到 {@code Direction.UP} 的那一面），只能点名。
+	 * 其它模组方块取不到名字时由调用方退回模型/兜底色，不会崩。
 	 */
 	private static final Identifier WATER_SPRITE = Identifier.withDefaultNamespace("block/water_still");
 	private static final Identifier LAVA_SPRITE = Identifier.withDefaultNamespace("block/lava_still");
+	private static final Identifier FIRE_SPRITE = Identifier.withDefaultNamespace("block/fire_0");
+	private static final Identifier SOUL_FIRE_SPRITE = Identifier.withDefaultNamespace("block/soul_fire_0");
 
 	/**
 	 * 岩浆过渡用的降采样边长：把单帧 16×16 盒式平均成 {@value #LAVA_TILE_SIZE}×{@value #LAVA_TILE_SIZE}。
@@ -65,8 +68,14 @@ final class BlockTextureColors {
 	 */
 	private static final int LAVA_TILE_SIZE = 8;
 
-	/** 岩浆采样步长（纹素/格）：取 {@value #LAVA_SAMPLE_STEP}，小图边长 {@value #LAVA_TILE_SIZE}，整片岩浆走完一个循环约 80 格。 */
-	private static final float LAVA_SAMPLE_STEP = 0.10F;
+	/**
+	 * 岩浆采样步长（纹素/格）：取 {@value #LAVA_SAMPLE_STEP}，小图边长 {@value #LAVA_TILE_SIZE}，
+	 * 整片岩浆走完一个循环约 53 格。
+	 *
+	 * <p>取 {@value #LAVA_SAMPLE_STEP}（原 0.10）：0.10 时一片小岩浆池只覆盖不到一个纹素，颜色几乎不变；
+	 * 调到 0.15 后同样的池子能走过好几个纹素，明暗过渡才看得出来，同时仍远小于 1 纹素/格——不会跳色。
+	 */
+	private static final float LAVA_SAMPLE_STEP = 0.15F;
 
 	/**
 	 * 采样相位的"平滑扰动"幅度（纹素）与频率。
@@ -84,12 +93,6 @@ final class BlockTextureColors {
 	 * 见 {@link #liftAboveGlowFloor}。
 	 */
 	private static final int GLOW_FLOOR_TOTAL = 480;
-
-	/** 岩浆贴图本来的典型总亮度（岩浆贴图整体偏暗）。 */
-	private static final int LAVA_REFERENCE_TOTAL = 380;
-
-	/** 岩浆本色相对贴图明暗的浮动幅度：0 就是全抹平，1 就是照贴图比例完整保留。 */
-	private static final double LAVA_BRIGHTNESS_GAIN = 0.5;
 
 	/** 抬亮后的总亮度上限，避免整片岩浆过曝、糊成一片纯亮色。 */
 	private static final int GLOW_CEIL_TOTAL = 600;
@@ -145,7 +148,7 @@ final class BlockTextureColors {
 	}
 
 	private int resolve(Minecraft minecraft, BlockState state, boolean emissive) {
-		Identifier sprite = fluidSprite(state);
+		Identifier sprite = namedSprite(state);
 		if (sprite == null) {
 			sprite = topSprite(minecraft, state);
 		}
@@ -153,13 +156,19 @@ final class BlockTextureColors {
 				: averageColor(minecraft.getResourceManager(), sprite, emissive);
 	}
 
-	/** 原版流体没有方块模型，直接点名贴图。 */
-	private static Identifier fluidSprite(BlockState state) {
+	/** 原版点名取色的方块：流体（水、岩浆）与火（普通火、灵魂火）。见各 {@code *_SPRITE} 常量。 */
+	private static Identifier namedSprite(BlockState state) {
 		if (state.is(Blocks.WATER)) {
 			return WATER_SPRITE;
 		}
 		if (state.is(Blocks.LAVA)) {
 			return LAVA_SPRITE;
+		}
+		if (state.is(Blocks.FIRE)) {
+			return FIRE_SPRITE;
+		}
+		if (state.is(Blocks.SOUL_FIRE)) {
+			return SOUL_FIRE_SPRITE;
 		}
 		return null;
 	}
@@ -196,8 +205,12 @@ final class BlockTextureColors {
 	/** 贴图名 → 供 {@link #lavaColor} 采样的降采样小图。只给岩浆用，多线程共用。 */
 	private final Map<Identifier, LavaTile> byPixels = new ConcurrentHashMap<>();
 
-	/** 一张岩浆贴图的"单帧降采样小图"：边长 {@code size}，逐行存放 ARGB 的 RGB 部分。 */
-	private record LavaTile(int[] rgb, int size) {
+	/**
+	 * 一张岩浆贴图的"单帧降采样小图"：边长 {@code size}，逐行存放 ARGB 的 RGB 部分；
+	 * {@code minTotal}/{@code maxTotal} 是小图里三通道之和的最小/最大值，供
+	 * {@link #liftAboveGlowFloor} 把整张小图的明暗<b>撑满</b>可用亮度带（见那里的说明）。
+	 */
+	private record LavaTile(int[] rgb, int size, int minTotal, int maxTotal) {
 	}
 
 	/**
@@ -219,7 +232,7 @@ final class BlockTextureColors {
 		}
 		float u = worldX * LAVA_SAMPLE_STEP + LAVA_WARP * (float) Math.sin(worldZ * LAVA_WARP_FREQ);
 		float v = worldZ * LAVA_SAMPLE_STEP + LAVA_WARP * (float) Math.cos(worldX * LAVA_WARP_FREQ);
-		return liftAboveGlowFloor(bilinear(lava, u, v));
+		return liftAboveGlowFloor(bilinear(lava, u, v), lava);
 	}
 
 	/** 在小图上的双线性采样；横竖都按小图边长回绕（小图首尾相接）。 */
@@ -255,10 +268,16 @@ final class BlockTextureColors {
 	 * 把岩浆本色抬到发光下限之上，并让总亮度随贴图本来的明暗浮动。
 	 *
 	 * <p>着色那一步只保证"不低于下限"；只要这里已超过下限就不会再动它，贴图的明暗过渡因此保留。
-	 * 目标总亮度按贴图总亮度线性映射、夹在 [{@link #GLOW_FLOOR_TOTAL}, {@link #GLOW_CEIL_TOTAL}]
-	 * 之间：暗的不会暗到看不出是光源，亮的也不会过曝。
+	 * 目标总亮度把这张小图的明暗按<b>它自己的 {@code minTotal}~{@code maxTotal}</b> 线性映射到
+	 * [{@link #GLOW_FLOOR_TOTAL}, {@link #GLOW_CEIL_TOTAL}]：最暗的一格落到下限、最亮的一格落到上限，
+	 * 中间的灰度逐个铺开。
+	 *
+	 * <p><b>为什么要按小图自己的范围归一化</b>（以前是拿一个写死的"典型亮度"当基准）：
+	 * 旧写法 {@code 480 + 0.5 × (total - 380)} 里那条 {@code 380} 是贴图的<b>典型</b>亮度，于是
+	 * <b>凡是不亮于典型的像素全被夹到同一个 480</b>——半张贴图糊成一块纯色，整片岩浆看着很单调。
+	 * 归一化之后同样的亮度带里铺开的是完整明暗，观感立刻有层次；而且换资源包也会自适应。
 	 */
-	private static int liftAboveGlowFloor(int rgb) {
+	private static int liftAboveGlowFloor(int rgb, LavaTile lava) {
 		int red = (rgb >> 16) & 0xFF;
 		int green = (rgb >> 8) & 0xFF;
 		int blue = rgb & 0xFF;
@@ -266,8 +285,10 @@ final class BlockTextureColors {
 		if (total <= 0) {
 			return rgb;
 		}
-		int target = (int) Math.round(GLOW_FLOOR_TOTAL + LAVA_BRIGHTNESS_GAIN * (total - LAVA_REFERENCE_TOTAL));
-		target = Math.clamp(target, GLOW_FLOOR_TOTAL, GLOW_CEIL_TOTAL);
+		int span = lava.maxTotal() - lava.minTotal();
+		double t = span > 0 ? (total - lava.minTotal()) / (double) span : 0.0;
+		t = Math.clamp(t, 0.0, 1.0);
+		int target = (int) Math.round(GLOW_FLOOR_TOTAL + t * (GLOW_CEIL_TOTAL - GLOW_FLOOR_TOTAL));
 		double factor = target / (double) total;
 		return Math.clamp((int) Math.round(red * factor), 0, 255) << 16
 				| Math.clamp((int) Math.round(green * factor), 0, 255) << 8
@@ -299,6 +320,8 @@ final class BlockTextureColors {
 			int size = frame % LAVA_TILE_SIZE == 0 ? LAVA_TILE_SIZE : frame;
 			int block = frame / size;
 			int[] rgb = new int[size * size];
+			int minTotal = Integer.MAX_VALUE;
+			int maxTotal = 0;
 			for (int y = 0; y < size; y++) {
 				for (int x = 0; x < size; x++) {
 					long red = 0;
@@ -309,16 +332,21 @@ final class BlockTextureColors {
 							int pixel = image.getPixel(x * block + dx, y * block + dy);
 							red += (pixel >> 16) & 0xFF;
 							green += (pixel >> 8) & 0xFF;
-							blue += pixel & 0xFF;
+							blue += (pixel & 0xFF);
 						}
 					}
 					int count = block * block;
-					rgb[y * size + x] = (int) (red / count) << 16
-							| (int) (green / count) << 8
-							| (int) (blue / count);
+					int r = (int) (red / count);
+					int g = (int) (green / count);
+					int b = (int) (blue / count);
+					rgb[y * size + x] = r << 16 | g << 8 | b;
+					// 记下这张小图自己的明暗范围，供 liftAboveGlowFloor 归一化（见那里的说明）
+					int total = r + g + b;
+					minTotal = Math.min(minTotal, total);
+					maxTotal = Math.max(maxTotal, total);
 				}
 			}
-			LavaTile loaded = new LavaTile(rgb, size);
+			LavaTile loaded = new LavaTile(rgb, size, minTotal, maxTotal);
 			byPixels.put(spriteId, loaded);
 			return loaded;
 		} catch (IOException | RuntimeException e) {

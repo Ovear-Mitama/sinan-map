@@ -116,6 +116,7 @@ public final class MinimapSettingsIO {
 		json.addProperty("entityRadarRadius", settings.entityRadarRadius());
 		json.addProperty("entityRadarHostileOnly", settings.entityRadarHostileOnly());
 		json.addProperty("entityRadarHeightIndicator", settings.entityRadarHeightIndicator());
+		json.addProperty("radarIconMode", settings.radarIconMode().name());
 		json.addProperty("sharePlayerPosition", settings.sharePlayerPosition());
 
 		json.addProperty("waypointHudDistance", settings.waypointHudDistance());
@@ -178,6 +179,9 @@ public final class MinimapSettingsIO {
 				bool(json, "entityRadarHostileOnly", settings.entityRadarHostileOnly()));
 		settings.setEntityRadarHeightIndicator(
 				bool(json, "entityRadarHeightIndicator", settings.entityRadarHeightIndicator()));
+		settings.setRadarIconMode(
+				enumOf(MinimapSettings.RadarIconMode.class, string(json, "radarIconMode"),
+						settings.radarIconMode()));
 		settings.setSharePlayerPosition(
 				bool(json, "sharePlayerPosition", settings.sharePlayerPosition()));
 

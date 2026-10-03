@@ -5,25 +5,27 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.joml.Matrix3x2fStack;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.Identifier;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -31,6 +33,7 @@ import net.minecraft.world.item.SpawnEggItem;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 
+import sinanmap.client.map.data.ClientChunkColorProvider;
 import sinanmap.common.SinanConstants;
 import sinanmap.common.hud.MinimapSettings;
 import sinanmap.common.hud.ScreenRect;
@@ -45,8 +48,9 @@ import sinanmap.common.hud.ScreenRect;
  *
  * <p><b>退化链</b>：头像做不出来（非活体渲染器、贴图读不到、离屏不可用、该变种已判失败）→
  * <b>刷怪蛋物品图标</b> → <b>菱形标记</b>（黄=友好、红=敌对，未知实体用它们表示）。完整优先级：
- * <b>小体型判定 → 真头像 → 刷怪蛋 → 菱形</b>，见 {@link #buildAvatar}。小体型（碰撞箱宽度小于
- * {@value #SMALL_ENTITY_MIN_SIDE} 格）先按尺寸把整个图标缩小（见 {@link #iconScaleFor}）。
+ * <b>小体型判定 → 真头像 → 刷怪蛋 → 菱形</b>，见 {@link #buildAvatar}。小体型（碰撞箱宽 × 高小于
+ * {@value #SMALL_ENTITY_MIN_METRIC}，另有小型鸟兽/农场动物/马等几档，见 {@link #iconScaleFor}）
+ * 先按尺寸把整个图标缩小。
  * <b>投射物与点燃的 TNT</b>（{@link #isMarkerEntity}）不是活体、也没有头像来源，直接画<b>紫色菱形</b>。
  *
  * <p><b>缓存策略</b>：{@code EntityType → 变种键 → 头像}（见 {@link MobHeadKey}）只在该<b>变种</b>
@@ -74,9 +78,6 @@ import sinanmap.common.hud.ScreenRect;
  * {@link MinimapSettings#entityRadarHeightIndicator()}）。
  */
 public final class EntityRadar {
-
-	// 【临时诊断】见 backdropColorOf，定位后删除
-	private static final Logger LOGGER = LoggerFactory.getLogger(SinanConstants.MOD_ID);
 
 	/**
 	 * 每帧最多画几个（超出按水平距离取最近的）。
@@ -108,6 +109,13 @@ public final class EntityRadar {
 	 * <p>在 {@link #refresh} 里从设置读一次，绘制时直接用——绘制路径上不该再去碰 settings。
 	 */
 	private boolean heightIndicator = true;
+
+	/**
+	 * 当前雷达图标的显示档（全部 / 无图标（菱形） / 仅玩家），由 {@link #refresh} 从设置里读一次。
+	 *
+	 * <p>在绘制路径上不再碰 settings，只认这里存的值。
+	 */
+	private MinimapSettings.RadarIconMode iconMode = MinimapSettings.RadarIconMode.ALL;
 
 	/** 物品图标在原版模型里的边长（GUI 像素），用来把头像缩放到想要的大小。 */
 	private static final double ITEM_ICON_SIZE = 16.0;
@@ -141,8 +149,17 @@ public final class EntityRadar {
 		return ICON_GUI_PIXELS;
 	}
 
-	/** 见 {@link #radarIconSize}：图标边长（GUI 像素）。 */
-	private static final double ICON_GUI_PIXELS = 6.0;
+	/**
+	 * 见 {@link #radarIconSize}：图标边长（GUI 像素）。
+	 *
+	 * <p><b>6.0 → {@value}</b>：用户反馈"整体小一点"，全生物（头像、刷怪蛋/掉落物图标、菱形标记，
+	 * 以及跟着图标矩阵一起画的右下角高度箭头）统一降到这一档。要整体再大一档/小一档<b>只改这一个数</b>。
+	 *
+	 * <p><b>再往下的代价</b>：最小体型档（{@link #SMALL_ICON_MIN_SCALE}）乘完就只剩三四个像素，
+	 * 兔那种叠了两档的（见 {@link #RABBIT_ICON_SCALE}）会掉到 3 像素以下、糊成一团，
+	 * 所以"整体变小"要和那些额外档位一起看，不要单独把这里压到底。
+	 */
+	private static final double ICON_GUI_PIXELS = 5.5;
 
 	/** 小体型判据：碰撞箱<b>宽 × 高</b>小于这个值就算小生物（见 {@link #iconScaleFor}）。 */
 	private static final float SMALL_ENTITY_MIN_METRIC = 0.75F;
@@ -244,6 +261,7 @@ public final class EntityRadar {
 			return;
 		}
 		heightIndicator = settings.entityRadarHeightIndicator();
+		iconMode = settings.radarIconMode();
 		double radius = settings.entityRadarRadius();
 		double radiusSqr = radius * radius;
 		double playerX = player.getX();
@@ -255,13 +273,18 @@ public final class EntityRadar {
 			if (entity == player || !entity.isAlive()) {
 				continue;
 			}
+			// "仅玩家"档：只画其他玩家，生物/掉落物/投射物一律不画
+			if (iconMode == MinimapSettings.RadarIconMode.PLAYERS && !(entity instanceof Player)) {
+				continue;
+			}
 			// 活体、掉落物，以及两类"标记"（投射物与已点燃的 TNT）；其余（船/矿车/展示框…）不纳入。
 			boolean item = entity instanceof ItemEntity;
 			if (!item && !(entity instanceof LivingEntity) && !isMarkerEntity(entity)) {
 				continue;
 			}
-			if (hostileOnly) {
-				// "仅敌对"时只留敌对生物：掉落物与投射物也不是敌对生物，语义保持一致
+			if (hostileOnly && iconMode != MinimapSettings.RadarIconMode.PLAYERS) {
+				// "仅敌对"时只留敌对生物：掉落物与投射物也不是敌对生物，语义保持一致。
+				// "仅玩家"档不看这一条——玩家既不是敌对生物，两个开关叠在一起会得到空雷达。
 				if (entity.getType().getCategory() != MobCategory.MONSTER) {
 					continue;
 				}
@@ -433,14 +456,6 @@ public final class EntityRadar {
 	 */
 	private void drawIcon(GuiGraphicsExtractor graphics, Entity entity, double x, double y,
 			double size, double playerY) {
-		// 掉落物走另一条路：它没有模型脸，只有物品自己的图标；也不套用活体那套
-		// "按碰撞箱缩放的体型判据"（掉落物的碰撞箱与图标大小无关）
-		Avatar avatar = entity instanceof ItemEntity item ? avatarForItem(item) : avatarFor(entity);
-		if (avatar == null) {
-			// 这个类型的头像还在离屏渲染中：这一帧不画（也绝不把这个状态缓存成退化结果）
-			return;
-		}
-
 		float alpha = 1.0F;
 		float brightness = 1.0F;
 		if (heightIndicator) {
@@ -458,8 +473,6 @@ public final class EntityRadar {
 			}
 		}
 
-		// 小体型（iconScale < 1）整体画小一点：这是"按碰撞箱尺寸适配"的落点，见 iconScaleFor
-		float scale = (float) (size * avatar.iconScale() / ITEM_ICON_SIZE);
 		Matrix3x2fStack pose = graphics.pose();
 		pose.pushMatrix();
 		// 贴到整数<b>设备</b>像素再画：按小数位置贴图会把烘焙的那圈深色描边重采样成"一段有一段没有"，
@@ -467,24 +480,78 @@ public final class EntityRadar {
 		double deviceScale = Minecraft.getInstance().getWindow().getGuiScale();
 		pose.translate((float) (Math.round(x * deviceScale) / deviceScale),
 				(float) (Math.round(y * deviceScale) / deviceScale));
-		pose.scale(scale, scale);
-		if (avatar.hasHead()) {
-			drawHead(graphics, avatar.head(), brightness, alpha);
-		} else if (avatar.hasItemIcon()) {
-			// 掉落物图标再缩一档：原版物品渲染是 16×16 画满内框的，在小地图上比生物头像还抢眼
-			// 只影响物品，不动头像与菱形标记。
-			pose.pushMatrix();
-			pose.scale(ITEM_ICON_SCALE, ITEM_ICON_SCALE);
-			drawItem(graphics, avatar.itemIcon());
-			pose.popMatrix();
+
+		if (iconMode == MinimapSettings.RadarIconMode.DIAMOND) {
+			// 无图标档：一律画菱形，固定正常大小（不再随生物体型缩，否则小生物就是一个看不清的点）。
+			// 颜色口径与平时的一致：投射物/点燃的 TNT 紫、敌对红、其余友好黄。
+			// 菱形画成接近头像的体积（见 {@link #DIAMOND_MODE_ICON_SIZE}），否则整片雷达就是一堆糊点。
+			pose.scale((float) (size / ITEM_ICON_SIZE), (float) (size / ITEM_ICON_SIZE));
+			int color = isMarkerEntity(entity) ? MARKER_PURPLE : unknownMarkerColor(entity.getType());
+			drawDiamond(graphics, fadeColor(color, brightness, alpha), DIAMOND_MODE_ICON_SIZE);
+		} else if (iconMode == MinimapSettings.RadarIconMode.PLAYERS) {
+			// 仅玩家档：refresh 已筛成只有其他玩家，画皮肤正脸
+			pose.scale((float) (size / ITEM_ICON_SIZE), (float) (size / ITEM_ICON_SIZE));
+			drawPlayerFace(graphics, (Player) entity, brightness, alpha);
 		} else {
-			// 菱形标记：贴图（自绘）+ 按标记类型着色；只有菱形本体参与高度渐变，描边在贴图里
-			drawDiamond(graphics, fadeColor(avatar.color(), brightness, alpha));
+			// 全部档：掉落物走物品图标那条路；活体/标记走头像那条路
+			Avatar avatar = entity instanceof ItemEntity item ? avatarForItem(item) : avatarFor(entity);
+			if (avatar == null) {
+				// 这个类型的头像还在离屏渲染中：这一帧不画（也绝不把这个状态缓存成退化结果）
+				pose.popMatrix();
+				return;
+			}
+			// 小体型（iconScale < 1）整体画小一点：这是"按碰撞箱尺寸适配"的落点，见 iconScaleFor
+			pose.scale((float) (size * avatar.iconScale() / ITEM_ICON_SIZE),
+					(float) (size * avatar.iconScale() / ITEM_ICON_SIZE));
+			if (avatar.hasHead()) {
+				drawHead(graphics, avatar.head(), brightness, alpha);
+			} else if (avatar.hasItemIcon()) {
+				// 掉落物图标再缩一档：原版物品渲染是 16×16 画满内框的，在小地图上比生物头像还抢眼
+				// 只影响物品，不动头像与菱形标记。
+				pose.pushMatrix();
+				pose.scale(ITEM_ICON_SCALE, ITEM_ICON_SCALE);
+				drawItem(graphics, avatar.itemIcon());
+				pose.popMatrix();
+			} else {
+				// 菱形标记：贴图（自绘）+ 按标记类型着色；只有菱形本体参与高度渐变，描边在贴图里
+				drawDiamond(graphics, fadeColor(avatar.color(), brightness, alpha), MARKER_DIAMOND_SIZE);
+			}
 		}
 		if (heightIndicator) {
 			drawHeightIndicator(graphics, entity.getY() - playerY, backdropColorOf(entity));
 		}
 		pose.popMatrix();
+	}
+
+	/**
+	 * 画一个玩家的<b>皮肤正脸</b>（复制自 {@link TrackedPlayers} 的取皮方案，对齐参考的 Damage-Engine）：
+	 * 从 64×64 皮肤上把正脸那一格 {@code (8,8)}、{@code 8×8} 抠出来贴成方形头像。
+	 *
+	 * <p>关节与活体头像一样随整体缩放与高度渐变（描边不参与渐变）。帽子层（{@code (40,8)}）刻意不叠，
+	 * 它是半透明的，叠上去只会把五官糊掉。
+	 */
+	private static void drawPlayerFace(GuiGraphicsExtractor graphics, Player player,
+			float brightness, float alpha) {
+		int color = fadeColor(0xFFFFFFFF, brightness, alpha);
+		Identifier skin = skinTextureOf(player);
+		if (skin != null) {
+			graphics.blit(RenderPipelines.GUI_TEXTURED, skin, -ICON_HALF, -ICON_HALF,
+					8.0F, 8.0F, INNER, INNER, 8, 8, 64, 64, color);
+		} else {
+			// 皮肤资料还没到：画一块兜底色（与 TrackedPlayers 同色），不至于整个空格
+			graphics.fill(-ICON_HALF, -ICON_HALF, ICON_HALF, ICON_HALF,
+					fadeColor(0xFF3B3B46, brightness, alpha));
+		}
+	}
+
+	/** 见 {@link #drawPlayerFace}：从玩家列表里拿皮肤贴图；拿不到（离线资料还没到）就返回 null。 */
+	private static Identifier skinTextureOf(Player player) {
+		ClientPacketListener connection = Minecraft.getInstance().getConnection();
+		if (connection == null) {
+			return null;
+		}
+		PlayerInfo info = connection.getPlayerInfo(player.getUUID());
+		return info == null ? null : info.getSkin().body().texturePath();
 	}
 
 	/**
@@ -554,7 +621,7 @@ public final class EntityRadar {
 	 * 方块，而 {@code blockPosition().below()} 会漏掉"生物自己站进去的那半格"。雪原正是这种情形：地面是
 	 * <b>雪层</b>（只有几像素高）加底下的草/土，生物站在雪层里，它所在的那一格是雪，再往下数一格却是土。
 	 * 取到土就判成暗地形，于是"雪地一片白"却仍然画白箭头。所以这里与地图同口径：<b>从生物自己那一格开始
-	 * 往下找第一格非空气方块</b>。
+	 * 往下找第一格非空气、也非"看穿的装饰"的方块</b>（矮草、花、火把…），详见方法内的循环。
 	 *
 	 * <p><b>为什么用地图色</b>：它正是"这块地方在地图上看起来是什么颜色"的官方口径。地图本身按当前光照
 	 * 合成，夜里/下雨会把整张图压下去（天空光衰减越强越暗，天气再叠一档），把同一份衰减作用到取到的颜色上，
@@ -566,15 +633,27 @@ public final class EntityRadar {
 		// 取"这一列在地图上看得见的那一格"。地图按 WORLD_SURFACE（最上面那个非空气方块）取色，
 		// 箭头必须跟同一个口径：生物钻到地表之下时（洞穴、山坡背面），它脚下是石头、而地图上那一格
 		// 是雪/草，按生物自己那一格取色就会"白地图上画白箭头"。
-		BlockPos top = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, entity.blockPosition());
-		BlockState surface = null;
+		BlockPos feet = entity.blockPosition();
+		BlockPos top = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, feet);
+		// 高度图在部分列会返回<b>未填充的世界底部值</b>（如 -64），远低于实体这一格的 Y：
+		// 再往下扫只能扫到空气、取到全 0，于是站在草地的生物被误判成"暗地形"→ 画白箭头，
+		// 与旁边判成亮地形的同类交错就是"深度指示一闪一闪（一会黑一会白）"。这种"地表在实体脚下很深处"
+		// 的高度图是数据没写好，直接改用实体自己那一列往下扫。
+		if (top.getY() < feet.getY() - SURFACE_SCAN_DEPTH) {
+			top = feet;
+		}
 		int base = 0;
-		// 高度图给的是"地表之上那一格"，不同口径下可能已经就是地表，所以往下扫几格取第一个非空气
+		// 与地图取样同一口径往下找"真正的地面"：跳过空气与矮草/高草/火把这类"看穿的装饰"。
+		// <b>不跳装饰会踩 MapColor 的坑</b>：草方块是 {@code GRASS}（{@code 0x7FB238}，亮度 148），
+		// 而矮草/高草是 {@code PLANT}（{@code 0x007C00}，亮度只有 73）——草原上生物大多站在矮草里，
+		// 于是同一片绿色草原上会一半画深色箭头、一半画白色箭头。
+		// 花也一并跳过：地图取样把它们按本色画（是地表），但它们的 MapColor 同样是 PLANT 深绿、
+		// 并不代表脚下那片草地，拿来判明暗会让"站在花上的生物"在一片绿草原上画白箭头。
 		for (int i = 0; i <= SURFACE_SCAN_DEPTH; i++) {
 			backdropPos.set(top.getX(), top.getY() - i, top.getZ());
 			BlockState state = level.getBlockState(backdropPos);
-			if (!state.isAir()) {
-				surface = state;
+			if (!state.isAir() && !ClientChunkColorProvider.isSurfaceDecoration(state)
+					&& !state.is(BlockTags.FLOWERS)) {
 				base = state.getMapColor(level, backdropPos).col;
 				break;
 			}
@@ -586,23 +665,8 @@ public final class EntityRadar {
 		int r = (int) (((base >> 16) & 0xFF) * dim);
 		int g = (int) (((base >> 8) & 0xFF) * dim);
 		int b = (int) ((base & 0xFF) * dim);
-		int argb = 0xFF000000 | (r << 16) | (g << 8) | b;
-		// 【临时诊断】定位"白天雪地仍画白箭头"用，定位后删除：只在"颜色或判定"变化时打一条
-		String diagKey = Integer.toHexString(base) + "|" + isBrightColor(argb);
-		if (diagLeft > 0 && !diagKey.equals(diagLastKey)) {
-			diagLeft--;
-			diagLastKey = diagKey;
-			LOGGER.info("高度指示诊断 | 实体={} 实体坐标={}/{}/{} 地表坐标={}/{}/{} 地表方块={} 地图色=#{} 天空衰减={} dim={} 结果=#{} 判深={}",
-					entity.getType(), entity.getBlockX(), entity.getBlockY(), entity.getBlockZ(),
-					top.getX(), top.getY(), top.getZ(), surface, Integer.toHexString(base),
-					level.getSkyDarken(), dim, Integer.toHexString(argb), isBrightColor(argb));
-		}
-		return argb;
+		return 0xFF000000 | (r << 16) | (g << 8) | b;
 	}
-
-	// 【临时诊断】见 backdropColorOf，定位后删除
-	private static int diagLeft = 30;
-	private static String diagLastKey = "";
 
 	/** 见 {@link #drawHeightIndicator}：按亮度判"亮地形"（整数运算，无浮点）。 */
 	private static boolean isBrightColor(int argb) {
@@ -683,9 +747,13 @@ public final class EntityRadar {
 	 * 一条边：海龟碰撞箱 1.2×0.4、蝾螈 0.75×0.42 横向一点都不小，按最小边（高度）判会被压到 0.5 / 0.7、
 	 * 在地图上认不出来；而真正窄的蝙蝠 0.5、鹦鹉 0.5、蠹虫/末影螨 0.4 仍然照旧缩。
 	 *
-	 * <p><b>阈值</b>：≥{@value #SMALL_ENTITY_MIN_SIDE} 格算正常（原版人形/四足的标准宽度就是 0.6，
-	 * 僵尸/骷髅/牛羊/狼猫完全不受影响）；{@value #SMALL_ENTITY_TINY_SIDE}~{@value #SMALL_ENTITY_MIN_SIDE}
-	 * 之间线性地从 {@value #SMALL_ICON_MIN_SCALE} 涨到 1.0；再小就取 {@value #SMALL_ICON_MIN_SCALE}。
+	 * <p><b>阈值</b>：≥{@value #SMALL_ENTITY_MIN_METRIC}（宽×高）算正常——原版人形/四足的标准宽度
+	 * 就是 0.6，僵尸/骷髅/牛羊都在这一头，<b>完全不受这条判据影响</b>；
+	 * {@value #SMALL_ENTITY_TINY_METRIC}~{@value #SMALL_ENTITY_MIN_METRIC} 之间线性地从
+	 * {@value #SMALL_ICON_MIN_SCALE} 涨到 1.0；再小就取 {@value #SMALL_ICON_MIN_SCALE}。
+	 *
+	 * <p><b>狼/猫</b>虽然过得了这条判据（地面积 0.42~0.51），但它们还有
+	 * {@link #SMALL_BIRD_BEAST_ICON_SCALE} 那一档，所以并不是"不受影响"。
 	 *
 	 * <p><b>每类型算一次</b>：用 {@code EntityType#getWidth} 等类型级常量，结果随头像一起缓存，每帧零成本。
 	 */
@@ -704,6 +772,11 @@ public final class EntityRadar {
 		}
 		// 鹦鹉、蝙蝠、蜜蜂的地面积和猫接近（0.42~0.45），但视觉上该明显更小，再额外缩一档。
 		scale *= extraSmallFactor(type);
+		// 鸡/猫这一族（小型鸟兽）在体型判据之上再压一档：它们画的是"整只/整个头"、把画布填满
+		// （鸡、鹦鹉、蝙蝠都是整只画），按地面积判出来的档位看着仍比同档的猪牛羊抢眼。
+		if (isSmallBirdOrBeast(type)) {
+			scale *= SMALL_BIRD_BEAST_ICON_SCALE;
+		}
 		// 马/驴/骡那一族整身比"人那么高"的生物长得多，按 1.0 画出来明显大一圈，整族压一档。
 		if (isHorseFamily(type)) {
 			scale *= HORSE_ICON_SCALE;
@@ -803,6 +876,29 @@ public final class EntityRadar {
 			return 0.88F;
 		}
 		return 1.0F;
+	}
+
+	/**
+	 * 见 {@link #iconScaleFor}：<b>小型鸟兽</b>（鸡、猫、豹猫、狐狸、狼、鹦鹉、蝙蝠）在体型判据之上
+	 * 再压一档，取 {@value}。要统一调这一族的观感只改这一个数。
+	 *
+	 * <p><b>为什么它们要单独一档</b>：这几个在取景框里就是"整个头/整只"、把画布填满
+	 * （见 {@link MobHeads}：鸡、鹦鹉、蝙蝠都按整只画），地面积判据只看到 0.28~0.45，
+	 * 算出来的档位与猪牛羊相近，画面上却明显更抢眼。
+	 *
+	 * <p><b>不含兔</b>：兔已有自己的 {@link #RABBIT_ICON_SCALE}，两者叠乘会掉到 2 像素多、糊成一团。
+	 * <b>不含蜜蜂</b>：它已有 {@link #extraSmallFactor} 那一档，且"鸡猫类"说的是鸟兽。
+	 *
+	 * <p>这一档只会让<b>本来就 &lt; 1.0</b> 的类型更小，所以不会把谁从"正常体型"推进
+	 * {@link #buildAvatar} 的"小体型"分支（那条分支决定退化时画菱形还是刷怪蛋）。
+	 */
+	private static final float SMALL_BIRD_BEAST_ICON_SCALE = 0.85F;
+
+	/** 见 {@link #SMALL_BIRD_BEAST_ICON_SCALE}：鸡、猫、豹猫、狐狸、狼、鹦鹉、蝙蝠。 */
+	private static boolean isSmallBirdOrBeast(EntityType<?> type) {
+		return type == EntityType.CHICKEN || type == EntityType.CAT || type == EntityType.OCELOT
+				|| type == EntityType.FOX || type == EntityType.WOLF
+				|| type == EntityType.PARROT || type == EntityType.BAT;
 	}
 
 	/** 幼体图标的额外缩放，见 {@link #iconScaleFor}。 */
@@ -965,13 +1061,15 @@ public final class EntityRadar {
 	 * 画一颗<b>菱形标记</b>：既没有真头像、也没有物品图标时的最后一档。
 	 *
 	 * <p>用菱形而不是方形色块，是因为方色块和真头像一样都是"方块"、看起来像"头像没画出来"，菱形一眼
-	 * 就知道是<b>标记</b>；尺寸也小一档（见 {@link #MARKER_DIAMOND_HALF}），不跟真头像抢地方。
+	 * 就知道是<b>标记</b>；尺寸也小一档（见 {@link #MARKER_DIAMOND_SIZE}），不跟真头像抢地方。
 	 *
 	 * <p><b>用贴图而不是自己拼几何</b>：形状与描边都画在 {@value #MARKER_DIAMOND_TEXTURE} 里，这里只负责
 	 * "贴上去 + 按标记类型着色"（{@code blitSprite} 的颜色参数乘到贴图上，一张白菱形就能出紫/黄/红三种）。
+	 *
+	 * @param size 绘制边长（图标坐标，满框是 {@value #ICON_HALF} 的两倍）；见 {@link #MARKER_DIAMOND_SIZE}
+	 *             与 {@link #DIAMOND_MODE_ICON_SIZE}——两处用不同大小，菱形档画得更大、单独标记画得小
 	 */
-	private static void drawDiamond(GuiGraphicsExtractor graphics, int color) {
-		int size = MARKER_DIAMOND_SIZE;
+	private static void drawDiamond(GuiGraphicsExtractor graphics, int color, int size) {
 		int half = size / 2;
 		graphics.blitSprite(RenderPipelines.GUI_TEXTURED, MARKER_DIAMOND_TEXTURE,
 				-half, -half, size, size, color);
@@ -982,8 +1080,17 @@ public final class EntityRadar {
 			Identifier.fromNamespaceAndPath(SinanConstants.MOD_ID, "marker_diamond");
 
 	/**
-	 * 菱形标记的绘制边长（图标坐标，满框是 {@value #ICON_HALF}）。取 {@value #MARKER_DIAMOND_SIZE}：
-	 * 整体 6×6 图标单位、落到屏幕上约 2.2 个 GUI 像素，比生物头像小得多，但仍能一眼看出"这里有东西"。
+	 * 单独标记（投射物 / 点燃的 TNT / 未知实体）那颗菱形的绘制边长（图标坐标，满框是
+	 * {@value #ICON_HALF} 的两倍）。
+	 *
+	 * <p><b>6 → {@value}</b>：原来画出来只有 2 个 GUI 像素出头，配合 16×16 的贴图就是"8 倍缩小 + 线性
+	 * 过滤"，糊成一团灰点。放大到 {@value} 之后落到屏幕上约 3.4 个 GUI 像素，轮廓才立得住。
 	 */
-	private static final int MARKER_DIAMOND_SIZE = 6;
+	private static final int MARKER_DIAMOND_SIZE = 10;
+
+	/**
+	 * "无图标（菱形）"档下每只生物那颗菱形的绘制边长。取 {@value}：比单独标记再大一档，接近生物头像
+	 * 的体积（{@value #ICON_GUI_PIXELS} GUI 像素），整片雷达才不至于是一片看不清的糊点。
+	 */
+	private static final int DIAMOND_MODE_ICON_SIZE = 12;
 }

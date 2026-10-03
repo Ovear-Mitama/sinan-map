@@ -77,4 +77,6 @@ jar {
 	from(new File(repoRoot, 'LICENSE')) {
 		rename { "${it}_${jarNameSuffix}" }
 	}
+	// 产物命名：mod名称-mod版本号-加载器-MC版本（如 sinanmap-26.1.0.1-neoforge-26.1.2.jar）
+	archiveFileName = "sinanmap-${project.version}-neoforge-${project.minecraft_version}.jar"
 }

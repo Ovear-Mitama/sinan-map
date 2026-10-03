@@ -209,6 +209,22 @@ public final class MinimapSettings {
 	}
 
 	/**
+	 * 生物雷达<b>图标显示</b>的三档：
+	 *
+	 * <ul>
+	 *   <li>{@link #ALL}：全部生物，都画各自的真头像/物品图标/菱形（默认）。</li>
+	 *   <li>{@link #DIAMOND}（无图标）：全部生物都只画一颗<b>菱形标记</b>（友好黄、敌对红、投射物紫），
+	 *       不画头像与物品图标——雷达干净得多，但还能看出"哪里有什么东西、是友是敌"。</li>
+	 *   <li>{@link #PLAYERS}（仅玩家）：只画<b>其他玩家</b>（皮肤正脸），不画生物、掉落物与投射物。</li>
+	 * </ul>
+	 */
+	public enum RadarIconMode {
+		ALL,
+		DIAMOND,
+		PLAYERS,
+	}
+
+	/**
 	 * 自动缩放时"每个 GUI 像素代表多少方块"，也就是小地图的倍率。
 	 *
 	 * <p><b>这是小地图看多大范围的唯一开关</b>：数值越大，视野越广、地形显示得越小。按默认 96×64 的
@@ -237,6 +253,9 @@ public final class MinimapSettings {
 	 * <p>默认开：小图标上光看位置很难判断高低，这一层明暗是最省事的提示。
 	 */
 	private boolean entityRadarHeightIndicator = true;
+
+	/** 雷达图标的显示档（全部 / 无图标（菱形）/ 仅玩家），见 {@link RadarIconMode}。默认全部。 */
+	private RadarIconMode radarIconMode = RadarIconMode.ALL;
 
 	/**
 	 * 是否把自己的位置共享给同服务器的其他司南玩家。
@@ -506,6 +525,18 @@ public final class MinimapSettings {
 
 	public void setEntityRadarHeightIndicator(boolean value) {
 		this.entityRadarHeightIndicator = value;
+	}
+
+	/** 雷达图标的显示档（全部 / 无图标 / 仅玩家）。 */
+	public RadarIconMode radarIconMode() {
+		return radarIconMode;
+	}
+
+	public void setRadarIconMode(RadarIconMode value) {
+		if (value == null) {
+			throw new IllegalArgumentException("雷达图标模式不能为空");
+		}
+		this.radarIconMode = value;
 	}
 
 	/** 是否把自己的位置共享给同服务器的其他司南玩家。 */
@@ -907,6 +938,7 @@ public final class MinimapSettings {
 		this.entityRadarRadius = other.entityRadarRadius;
 		this.entityRadarHostileOnly = other.entityRadarHostileOnly;
 		this.entityRadarHeightIndicator = other.entityRadarHeightIndicator;
+		this.radarIconMode = other.radarIconMode;
 		this.sharePlayerPosition = other.sharePlayerPosition;
 		this.waypointHudDistance = other.waypointHudDistance;
 		this.waypointHudScale = other.waypointHudScale;

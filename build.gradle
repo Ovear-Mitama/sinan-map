@@ -91,6 +91,9 @@ jar {
 	from('LICENSE') {
 		rename { "${it}_${jarNameSuffix}" }
 	}
+	// 产物命名：mod名称-mod版本号-加载器-MC版本（如 sinanmap-26.1.0.1-fabric-26.1.2.jar）。
+	// Loom 1.18 已把重映射并进 jar 任务（不再有独立的 remapJar），所以这里改的就是玩家安装的那个。
+	archiveFileName = "sinanmap-${project.version}-fabric-${project.minecraft_version}.jar"
 }
 
 // configure the maven publication

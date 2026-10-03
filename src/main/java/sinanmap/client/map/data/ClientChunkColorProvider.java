@@ -2164,10 +2164,14 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	 * <p><b>缓存必须是线程安全的</b>，所以是 {@link ConcurrentHashMap}：洞穴"选列"
 	 * （{@code WorldSaveChunks#scanCaveColumns}）已经挪到后台线程，也会调到这里判定"这一格是不是要看
 	 * 穿的细碎方块"。两个线程并发 {@code put} 普通 {@code HashMap} 可能写坏桶、极端时查表死循环。
+	 *
+	 * <p><b>公开</b>是给雷达的高度指示用（{@code EntityRadar#backdropColorOf}）：它要跟地图同一口径
+	 * ——跳过矮草/花/火把这些"看穿的装饰"、取真正的地面来判明暗，否则生物站在矮草上会判成暗地形、
+	 * 在一片绿色草原上画出白色的高度箭头。
 	 */
 	private static final Map<BlockState, Boolean> SURFACE_DECORATION = new ConcurrentHashMap<>();
 
-	private static boolean isSurfaceDecoration(BlockState state) {
+	public static boolean isSurfaceDecoration(BlockState state) {
 		Boolean cached = SURFACE_DECORATION.get(state);
 		if (cached != null) {
 			return cached;
@@ -2179,7 +2183,13 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 
 	/** {@link #isSurfaceDecoration} 的实际判定（缓存未命中时才走这里）。 */
 	private static boolean computeSurfaceDecoration(BlockState state) {
-		if (isLayeredBlock(state) || state.is(BlockTags.LEAVES)) {
+		// 流体一律<b>不是</b>要"看穿的装饰"：它们就是地表本身，应当被采样。
+		// 水/冰由 {@link #isLayeredBlock} 兜住，但岩浆不是 layered——而岩浆方块（{@code LiquidBlock}）
+		// 的 {@code getRenderShape()} 是 {@code INVISIBLE}（流体走流体渲染器、不画方块模型），
+		// 于是会掉进下面那条 {@code RenderShape.INVISIBLE} 判定里被当成"看穿的装饰"跳过，
+		// 地表取样一路走到岩浆<b>下面</b>的石块——整片岩浆湖在地图上完全看不到。
+		// 这里把流体先摘出去（含各流动等级的岩浆与模组流体），岩浆才会按本色画出来。
+		if (isLayeredBlock(state) || !state.getFluidState().isEmpty() || state.is(BlockTags.LEAVES)) {
 			return false;
 		}
 		// 花与花簇要看出来，不能当"看穿的装饰"跳过：粉红色花簇（pink_petals）、野花簇

@@ -213,6 +213,7 @@ public final class MapSettingsScreen extends Screen {
 	/** 用不到的控件置灰。 */
 	private SinanSlider radarRadiusSlider;
 	private SinanCycleButton<Boolean> radarHostileToggle;
+	private SinanCycleButton<MinimapSettings.RadarIconMode> radarIconModeToggle;
 
 	/** 网格颜色的预览方块（点它开取色板），取色方式与新建路径点界面是同一套。 */
 	private ColorSwatch gridColorSwatch;
@@ -380,6 +381,7 @@ public final class MapSettingsScreen extends Screen {
 		lastScrollNanos = 0L;
 		radarRadiusSlider = null;
 		radarHostileToggle = null;
+		radarIconModeToggle = null;
 		// 取色板是浮层：换页 / 重建时收起，免得它跟着飘到别的页上
 		gridColorPicker.close();
 		compassColorPicker.close();
@@ -734,6 +736,18 @@ public final class MapSettingsScreen extends Screen {
 				List.of(Boolean.TRUE, Boolean.FALSE), settings.entityRadarHostileOnly(),
 				MapSettingsScreen::onOffName, settings::setEntityRadarHostileOnly);
 		add(radarHostileToggle, "screen.sinanmap.map_settings.tip.hostile_only");
+		// 图标显示：全部 / 无图标（菱形）/ 仅玩家
+		radarIconModeToggle = new SinanCycleButton<>(0, 0, columnWidth, ROW_HEIGHT,
+				Component.translatable("screen.sinanmap.minimap_settings.radar_icon_mode"),
+				List.of(MinimapSettings.RadarIconMode.ALL, MinimapSettings.RadarIconMode.DIAMOND,
+						MinimapSettings.RadarIconMode.PLAYERS),
+				settings.radarIconMode(),
+				MapSettingsScreen::radarIconModeName,
+				value -> {
+					settings.setRadarIconMode(value);
+					refreshControlStates();
+				});
+		add(radarIconModeToggle, "screen.sinanmap.map_settings.tip.radar_icon_mode");
 		add(toggle("screen.sinanmap.minimap_settings.radar_height_indicator",
 				settings::entityRadarHeightIndicator, settings::setEntityRadarHeightIndicator),
 				"screen.sinanmap.map_settings.tip.height_indicator");
@@ -1191,6 +1205,12 @@ public final class MapSettingsScreen extends Screen {
 	/** 开关值的显示名（用原版的"开 / 关"翻译键）。 */
 	private static String onOffName(boolean value) {
 		return Component.translatable(value ? "options.on" : "options.off").getString();
+	}
+
+	/** 雷达图标档的显示名（全部 / 无图标 / 仅玩家）。 */
+	private static String radarIconModeName(MinimapSettings.RadarIconMode mode) {
+		return Component.translatable("screen.sinanmap.minimap_settings.radar_icon_mode."
+				+ mode.name().toLowerCase()).getString();
 	}
 
 	/** 加一个控件（占满整列宽）。 */
@@ -1797,6 +1817,9 @@ public final class MapSettingsScreen extends Screen {
 		}
 		if (radarHostileToggle != null) {
 			radarHostileToggle.active = settings.entityRadarEnabled();
+		}
+		if (radarIconModeToggle != null) {
+			radarIconModeToggle.active = settings.entityRadarEnabled();
 		}
 		if (gridColorSwatch != null) {
 			// 网格没开时选颜色没有意义：预览方块与取色板都置灰不可用
