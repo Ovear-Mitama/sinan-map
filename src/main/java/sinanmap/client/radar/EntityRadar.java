@@ -431,7 +431,7 @@ public final class EntityRadar {
 				x = Math.clamp(x, rect.x() + margin, rect.right() - margin);
 				y = Math.clamp(y, rect.y() + margin, rect.bottom() - margin);
 			}
-			drawIcon(graphics, entity, x, y, iconSize, playerY);
+			drawIcon(graphics, entity, x, y, iconSize, playerY, PURPLE_MARKER_BOX_RATIO);
 		}
 		graphics.disableScissor();
 	}
@@ -457,7 +457,7 @@ public final class EntityRadar {
 			if (x < -margin || x > screenWidth + margin || y < -margin || y > screenHeight + margin) {
 				continue;
 			}
-			drawIcon(graphics, entity, x, y, iconSize, playerY);
+			drawIcon(graphics, entity, x, y, iconSize, playerY, PURPLE_MARKER_BOX_RATIO);
 		}
 	}
 
@@ -477,9 +477,13 @@ public final class EntityRadar {
 	 * <p><b>高度视觉区分</b>：按 {@code entity.getY() - playerY} 算 alpha（在上方越小越透）与
 	 * brightness（在下方越小越暗），只乘到<b>正脸/菱形本身</b>上；描边固定不透明、绝不参与渐变。
 	 * {@code |ΔY| ≤ HEIGHT_SAME_LEVEL} 的"同层"两个系数都保持 1.0。
+	 *
+	 * @param markerBoxRatio 紫色标记（投射物 / 点燃的 TNT）那颗菱形想要的边长（按图标框的比例，
+	 *                       见 {@link #PURPLE_MARKER_BOX_RATIO}）：两个地图都传它（两处大小一致）；
+	 *                       其余图标不受它影响
 	 */
 	private void drawIcon(GuiGraphicsExtractor graphics, Entity entity, double x, double y,
-			double size, double playerY) {
+			double size, double playerY, double markerBoxRatio) {
 		float alpha = 1.0F;
 		float brightness = 1.0F;
 		if (heightIndicator) {
@@ -511,7 +515,13 @@ public final class EntityRadar {
 			// 菱形画成接近头像的体积（见 {@link #DIAMOND_MODE_ICON_SIZE}），否则整片雷达就是一堆糊点。
 			pose.scale((float) (size / ITEM_ICON_SIZE), (float) (size / ITEM_ICON_SIZE));
 			int color = isMarkerEntity(entity) ? MARKER_PURPLE : unknownMarkerColor(entity.getType());
-			drawDiamond(graphics, fadeColor(color, brightness, alpha), DIAMOND_MODE_ICON_SIZE);
+			if (isMarkerEntity(entity)) {
+				// 紫色标记按共同比例放大，并按设备像素绘制（见 drawPurpleDiamond）
+				drawPurpleDiamond(graphics, fadeColor(color, brightness, alpha),
+						size / ITEM_ICON_SIZE, size * markerBoxRatio);
+			} else {
+				drawDiamond(graphics, fadeColor(color, brightness, alpha), DIAMOND_MODE_ICON_SIZE);
+			}
 		} else if (iconMode == MinimapSettings.RadarIconMode.PLAYERS) {
 			// 仅玩家档：refresh 已筛成只有其他玩家，画皮肤正脸
 			pose.scale((float) (size / ITEM_ICON_SIZE), (float) (size / ITEM_ICON_SIZE));
@@ -537,8 +547,14 @@ public final class EntityRadar {
 				drawItem(graphics, avatar.itemIcon());
 				pose.popMatrix();
 			} else {
-				// 菱形标记：贴图（自绘）+ 按标记类型着色；只有菱形本体参与高度渐变，描边在贴图里
-				drawDiamond(graphics, fadeColor(avatar.color(), brightness, alpha), MARKER_DIAMOND_SIZE);
+				// 菱形标记：几何绘制 + 按标记类型着色；只有菱形本体参与高度渐变，描边固定不透明。
+				if (isMarkerEntity(entity)) {
+					// 紫色标记（投射物 / 点燃的 TNT）按共同比例放大，并按设备像素绘制
+					drawPurpleDiamond(graphics, fadeColor(avatar.color(), brightness, alpha),
+							size * avatar.iconScale() / ITEM_ICON_SIZE, size * markerBoxRatio);
+				} else {
+					drawDiamond(graphics, fadeColor(avatar.color(), brightness, alpha), MARKER_DIAMOND_SIZE);
+				}
 			}
 		}
 		if (heightIndicator) {
@@ -1106,6 +1122,32 @@ public final class EntityRadar {
 	}
 
 	/**
+	 * 画紫色标记的菱形：<b>按设备像素逐行绘制</b>，而不是把小菱形放大。
+	 *
+	 * <p><b>为什么要按设备像素</b>：原来的做法是"6 个图标单位的小菱形 + 矩阵放大"。每行只有
+	 * 1 个图标单位高（≈2~3 设备像素），放大后斜边是一段段粗台阶，看着"分辨率很低"。
+	 * 这里在已有的图标矩阵上再叠一层 {@code 1 / (iconGuiPerUnit × guiScale)}，把本地坐标变成
+	 * <b>1 单位 = 1 设备像素</b>，再按目标设备像素数逐行填充——斜边以 1 设备像素为台阶，
+	 * 是这个尺寸下能做到的最锐利的菱形。
+	 *
+	 * <p>颜色仍由调用方按高度渐变算好（描边固定在 {@link #DOT_OUTLINE}）。
+	 *
+	 * @param iconGuiPerUnit 当前矩阵里 1 个图标单位等于多少 GUI 像素（图标框边长 / {@value #ITEM_ICON_SIZE}）
+	 * @param targetGui      目标边长（GUI 像素，见 {@link #PURPLE_MARKER_BOX_RATIO}）
+	 */
+	private static void drawPurpleDiamond(GuiGraphicsExtractor graphics, int color,
+			double iconGuiPerUnit, double targetGui) {
+		double guiScale = Math.max(1.0, Minecraft.getInstance().getWindow().getGuiScale());
+		// 先按设备像素取整数边长，再交给 drawDiamondRows 取奇数（宽高必须相等，见那里的注释）
+		int device = Math.max(1, (int) Math.round(targetGui * guiScale));
+		Matrix3x2fStack pose = graphics.pose();
+		pose.pushMatrix();
+		pose.scale((float) (1.0 / (iconGuiPerUnit * guiScale)));
+		drawDiamond(graphics, color, device);
+		pose.popMatrix();
+	}
+
+	/**
 	 * 按行画一颗实心菱形（以原点为中心）。
 	 *
 	 * <p>第 {@code row} 行的宽度 = {@code size} - 离中心行距离的两倍（约）：中间行最宽、上下两端收成一点，
@@ -1115,12 +1157,16 @@ public final class EntityRadar {
 		if (size <= 0) {
 			return;
 		}
-		double center = (size - 1) / 2.0;
-		for (int row = 0; row < size; row++) {
-			double distance = Math.abs(row - center);
-			int width = Math.max(1, size - (int) Math.round(2.0 * distance));
+		// <b>边长必须取奇数</b>：偶数尺寸时中心落在半格上，max(1, size - round(2*distance)) 算出来的
+		// 最大行宽只有 size-1，而高度仍是 size → 画出来是"竖着拉长"的菱形（放大后一眼看出）。
+		// 取奇数后中心落在整格上：宽度 = 边长 - 2 × 离中心行距离，宽高都等于这个奇数，45° 直边对称。
+		int oddSize = size % 2 == 0 ? size + 1 : size;
+		int center = (oddSize - 1) / 2;
+		for (int row = 0; row < oddSize; row++) {
+			int distance = Math.abs(row - center);
+			int width = oddSize - 2 * distance;
 			int left = -width / 2;
-			int y = row - (int) center;
+			int y = row - center;
 			graphics.fill(left, y, left + width, y + 1, color);
 		}
 	}
@@ -1135,9 +1181,26 @@ public final class EntityRadar {
 	 * {@value #ICON_HALF} 的两倍）。
 	 *
 	 * <p><b>10 → 8 → {@value}</b>：几何绘制后不再受贴图降采样限制，可以再收一档。
-	 * 落到屏幕上（图标满框为 {@value #ICON_GUI_PIXELS} GUI 像素）约 3 个 GUI 像素，仍一眼可辨。
+	 * 落到屏幕上（图标满框为 {@value #ICON_GUI_PIXELS} GUI 像素）约 3 个 GUI 像素，仍一眼可辨；
+	 * 紫色标记再按 {@link #PURPLE_MARKER_BOX_RATIO} 放大（两个地图共用同一比例）。
 	 */
 	private static final int MARKER_DIAMOND_SIZE = 6;
+
+	/**
+	 * <b>两个地图共用</b>：紫色标记（投射物 / 点燃的 TNT）那颗菱形的边长，按<b>图标框</b>的比例算
+	 * （原尺寸只有 {@code 6/16 ≈ 0.375}，即约 2.6 GUI 像素）。
+	 *
+	 * <p>小地图与全屏地图都传它，所以两处紫色菱形<b>大小一致</b>（两者本来就共用
+	 * {@link #radarIconSize} 同一条图标边长规则，这里只是再按同一个比例放大紫色那一颗）。
+	 * 黄/红菱形与头像不受影响。
+	 *
+	 * <p><b>1.0 → 0.9 → 0.8 → 0.65 → {@value}</b>：每一档都还是偏大，逐档收小。
+	 * 现在窗口化约 3.4 GUI / 7 设备像素、最大化约 2.75 GUI / 11 设备像素。
+	 *
+	 * <p><b>注意量化</b>：设备像素数会先四舍五入、再由 {@link #drawDiamondRows} 进位成奇数，
+	 * 所以相邻档位（如 0.8 与 0.7 在窗口化下）可能落到同一个像素数；要跨一档就多调 0.1 以上。
+	 */
+	private static final double PURPLE_MARKER_BOX_RATIO = 0.5;
 
 	/**
 	 * "无图标（菱形）"档下每只生物那颗菱形的绘制边长。
