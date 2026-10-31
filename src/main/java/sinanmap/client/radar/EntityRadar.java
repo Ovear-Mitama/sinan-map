@@ -142,11 +142,11 @@ public final class EntityRadar {
 	 *
 	 * <p><b>为什么不是简单的固定值</b>：完全固定 GUI 像素时，最大化窗口（GUI 缩放变大）图标会跟着
 	 * 明显变大；完全固定设备像素时，最大化后它相对小地图又显得变小。两头都不合适，所以取
-	 * <b>部分跟随</b>：GUI 尺寸按 {@code guiScale^-0.3} 变化（设备尺寸按 {@code guiScale^0.7} 增长，
+	 * <b>部分跟随</b>：GUI 尺寸按 {@code guiScale^-0.44} 变化（设备尺寸按 {@code guiScale^0.56} 增长，
 	 * 介于"完全跟随"和"完全不变"之间）——窗口化时图标够大，最大化时不至于突兀变大。
 	 *
 	 * <p><b>实测校准</b>：窗口化（guiScale 2）用 {@value} GUI；最大化（guiScale 3~4）经指数折算后
-	 * 约 4.9~5.4 GUI，正是用户认可的"最大化下正常"的那一档。
+	 * 约 5.3~6.0 GUI，落在"最大化下正常"那一档附近。
 	 */
 	private static double radarIconSize() {
 		double guiScale = Math.max(1.0, Minecraft.getInstance().getWindow().getGuiScale());
@@ -156,18 +156,18 @@ public final class EntityRadar {
 	/**
 	 * 见 {@link #radarIconSize}：<b>guiScale 2 时</b>的图标边长（GUI 像素）。
 	 *
-	 * <p><b>5.0 → 5.5 → 6.0 → {@value}</b>：一路按"整体小一点 / 太大 / 最大化下正常但窗口化偏小"
+	 * <p><b>5.0 → 5.5 → 6.0 → 6.8 → {@value}</b>：一路按"整体小一点 / 太大 / 最大化下正常但窗口化偏小"
 	 * 来回试出来的当前落点（窗口化基准）。要整体再大一档/小一档<b>只改这一个数</b>；
 	 * 注意同时要动 {@link #ICON_FOLLOW_EXPONENT} 才能把"最大化那一端"保持在原来的大小（见下）。
 	 *
 	 * <p><b>注意</b>：这个数是 <b>GUI 像素</b>（会跟随界面部分放大），不是设备像素——guiScale 2 下
-	 * {@value} GUI 等于 13.6 个设备像素，和"设备像素口径的 5.5"完全不同，别混。
+	 * {@value} GUI 等于 14.4 个设备像素，和"设备像素口径的 5.5"完全不同，别混。
 	 *
 	 * <p><b>再往下的代价</b>：最小体型档（{@link #SMALL_ICON_MIN_SCALE}）乘完就只剩三四个像素，
 	 * 兔那种叠了两档的（见 {@link #RABBIT_ICON_SCALE}）会掉到 3 像素以下、糊成一团，
 	 * 所以"整体变小"要和那些额外档位一起看，不要单独把这里压到底。
 	 */
-	private static final double ICON_GUI_PIXELS = 6.8;
+	private static final double ICON_GUI_PIXELS = 7.2;
 
 	/**
 	 * {@link #ICON_GUI_PIXELS} 对应的基准 GUI 缩放：窗口化实测为 2（日志里的一帧 96×64 GUI × 缩放 2）。
@@ -178,10 +178,10 @@ public final class EntityRadar {
 	 * 部分跟随指数（越小越"跟随界面"，越大越"固定物理大小"）：
 	 * {@code 0} = 完全跟随（纯 GUI 像素）、{@code 1} = 完全固定（纯设备像素）。
 	 *
-	 * <p><b>0.3 → {@value}</b>：用户要"窗口化再大一点"，但又认可最大化下的大小，所以不能只抬基准
-	 * （那样两头一起变大）。调大指数后，窗口化（guiScale 2）按 {@link #ICON_GUI_PIXELS} 取更大值，
-	 * 而 guiScale 4 处的折算结果仍 ≈5.0 GUI（用户认可的"最大化正常"档）：
-	 * {@code 6.8 × (2/4)^0.44 ≈ 5.0}。改动前先按这个式子验算两端。
+	 * <p><b>0.3 → {@value}</b>：既要把窗口化下的图标再抬一点，又不能连带把最大化下的也变大，
+	 * 所以不能只抬基准（那样两头一起变大）。调大指数后，窗口化（guiScale 2）按 {@link #ICON_GUI_PIXELS}
+	 * 取更大值，而 guiScale 4 处的折算结果仍 ≈5.3 GUI（"最大化正常"档附近）：
+	 * {@code 7.2 × (2/4)^0.44 ≈ 5.3}。改动前先按这个式子验算两端。
 	 */
 	private static final double ICON_FOLLOW_EXPONENT = 0.44;
 
