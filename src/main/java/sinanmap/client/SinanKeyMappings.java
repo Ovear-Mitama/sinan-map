@@ -47,15 +47,21 @@ public final class SinanKeyMappings {
 			KeyMapping.Category.register(Identifier.fromNamespaceAndPath(SinanConstants.MOD_ID, "controls"));
 
 	/**
-	 * 按住缩放键时，两次步进之间隔多少个客户端 tick。
+	 * 按住缩放键时的<b>连续缩放节奏</b>：每这么多纳秒走一格 {@code MinimapHud.ZOOM_STEP}。
 	 *
-	 * <p>20 tick/秒，取 {@value} → 每 0.25 秒一步：按住是"匀速拉远/拉近"，不是系统按键重复那种
-	 * "先静半秒、随后狂飙"（见 {@code register} 里缩放那一段的说明）。
+	 * <p>与全屏地图同一套做法（见 {@code WorldMapScreen#HOLD_STEP_NANOS}）：按"按住多久"直接算出
+	 * <b>绝对</b>目标值交给小地图的缩放动画平滑追平。取 {@code 110ms}（约 9 格/秒）——比原来的
+	 * 固定节拍（每 250ms 一步）密得多，动画每一格之间来不及落定，看起来就是连续过渡，
+	 * 不再"一顿一顿"。
 	 */
-	private static final int ZOOM_REPEAT_TICKS = 5;
+	private static final long ZOOM_HOLD_NANOS = 110_000_000L;
 
-	/** 按住缩放键时已经过去几个 tick（松手清零），见 {@link #ZOOM_REPEAT_TICKS}。 */
-	private static int zoomRepeatTicks;
+	/** 按住缩放键的当前状态：0 没按、1 放大、2 缩小。 */
+	private static int zoomKeyHold;
+
+	/** 按下那一刻的时间，以及按下并走完第一格之后的缩放目标（连续推进的基准）。 */
+	private static long zoomHoldStartNanos;
+	private static double zoomHoldBase;
 
 	private static final KeyMapping OPEN_WORLD_MAP = new KeyMapping(
 			"key." + SinanConstants.MOD_ID + ".world_map",
@@ -121,18 +127,33 @@ public final class SinanKeyMappings {
 					minecraft.setScreen(new WorldMapScreen(colorProvider, minimap));
 				}
 			}
-			// 缩放：按住时按<b>固定节拍</b>步进，而不是用 consumeClick()。
+			// 缩放：按住时<b>按"按住多久"连续推进</b>，而不是系统按键重复或固定节拍。
 			//
-			// 为什么：consumeClick() 把系统的"按键重复"也算作一次点击——按住后先静 ~0.5 秒，
-			// 之后每秒三十来次。而缩放值是<b>指数叠加</b>的（每步 ×ZOOM_STEP），目标值越跑越远、
-			// 平滑动画越追越快（动画是按"剩余距离的比例"逼近的），手感就是"一开始匀速、后面突然变快"。
-			// 固定节拍后按住的步进速率恒定，缓动只负责把每步抹平。
+			// 固定节拍（每 250ms 一步）的问题是：一步一停、动画每一格之间就停一下，观感"一顿一顿"；
+			// 系统按键重复更糟：先静 ~0.5 秒、之后每秒三十来次，而缩放值是<b>指数叠加</b>的
+			// （每步 ×ZOOM_STEP），目标值越跑越远，手感"一开始匀速、后面突然变快"。
+			// 这里的做法是：按下先走一格（轻点 = 一格），随后每帧按"按住时长 / ZOOM_HOLD_NANOS"
+			// 从基准算一个<b>绝对</b>目标交给小地图的动画去平滑追平——持续、匀速、不跳。
 			boolean zoomIn = MINIMAP_ZOOM_IN.isDown();
 			boolean zoomOut = MINIMAP_ZOOM_OUT.isDown();
 			if ((!zoomIn && !zoomOut) || minecraft.screen != null) {
-				zoomRepeatTicks = 0;
-			} else if (zoomRepeatTicks++ % ZOOM_REPEAT_TICKS == 0) {
-				minimap.zoomBy(zoomIn ? 1.0 / MinimapHud.ZOOM_STEP : MinimapHud.ZOOM_STEP);
+				zoomKeyHold = 0;
+			} else if (zoomKeyHold == 0) {
+				// 刚按下：先走一格（与以前轻点行为一致），再把基准定在"走完这格之后"
+				double dir = zoomIn ? 1.0 / MinimapHud.ZOOM_STEP : MinimapHud.ZOOM_STEP;
+				double base = minimap.zoomTarget();
+				minimap.zoomBy(dir);
+				zoomKeyHold = zoomIn ? 1 : 2;
+				zoomHoldStartNanos = System.nanoTime();
+				zoomHoldBase = base * dir;
+			} else {
+				// 按住：目标 = 基准 × 每格倍率^(按住时长 / 格时长)，匀速连续。
+				// 用整数格数（而不是浮点）推进，动画在两格之间自然补间，不会看起来一帧一帧地跳。
+				long steps = (System.nanoTime() - zoomHoldStartNanos) / ZOOM_HOLD_NANOS;
+				if (steps >= 1) {
+					double dir = zoomKeyHold == 1 ? 1.0 / MinimapHud.ZOOM_STEP : MinimapHud.ZOOM_STEP;
+					minimap.zoomTo(zoomHoldBase * Math.pow(dir, steps));
+				}
 			}
 			while (ADD_WAYPOINT.consumeClick()) {
 				if (minecraft.screen == null) {

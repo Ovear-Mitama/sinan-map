@@ -108,6 +108,12 @@ public final class ChunkRecord {
 	 */
 	private static final double[] factors = new double[COLUMNS];
 
+	/**
+	 * 自发光方块（岩浆）用的"地形起伏"系数暂存（只含高度×坡度、不含光照），见
+	 * {@link SurfaceShading#reliefFactor}。与 {@link #factors} 同性质：static、不可重入。
+	 */
+	private static final double[] reliefs = new double[COLUMNS];
+
 	/** 逐列的实际光照等级，以及平滑后的结果。两者都不是最终颜色，只是着色过程的中间量，见 {@link #factors}。 */
 	private static final int[] lightRaw = new int[COLUMNS];
 	private static final int[] lightSmooth = new int[COLUMNS];
@@ -228,15 +234,19 @@ public final class ChunkRecord {
 				int north = z == 0 ? columnHeight : height(index - size);
 				factors[index] = SurfaceShading.totalFactor(columnHeight, referenceY,
 						lightSmooth[index], west, north, isFlatSheet(index));
+				// 自发光方块只取"地形起伏"（不含光照），让它也有高低层次，见 SurfaceShading#reliefFactor
+				reliefs[index] = SurfaceShading.reliefFactor(columnHeight, referenceY, west, north);
 			}
 		}
 		// 最外一圈沿用相邻内部列的明暗。先补 x==0 那一列，再补 z==0 那一行，
 		// 这样两次读取到的都是已算好的值，不会互相引入新的落差。
 		for (int z = 1; z < size; z++) {
 			factors[z * size] = factors[z * size + 1];
+			reliefs[z * size] = reliefs[z * size + 1];
 		}
 		for (int x = 0; x < size; x++) {
 			factors[x] = factors[x + size];
+			reliefs[x] = reliefs[x + size];
 		}
 
 		for (int i = 0; i < COLUMNS; i++) {
@@ -246,10 +256,12 @@ public final class ChunkRecord {
 				out[i] = 0;
 				continue;
 			}
-			// 自发光方块（岩浆这类）直接给本色、不叠明暗——三项明暗都不适用于光源，
-			// 乘上去只会让它比游戏里暗一截，见 FLAG_EMISSIVE。但本色本身往往也偏暗，
-			// 所以再整体拉亮一档，见 brighten。
-			out[i] = isEmissive(i) ? 0xFF000000 | brighten(rgb(i)) : SurfaceShading.shade(rgb(i), factors[i]);
+			// 自发光方块（岩浆这类）：先抬亮本色（见 brighten），再乘一个"只含地形起伏、不含光照"的
+			// 系数（见 SurfaceShading#reliefFactor）——光照项会把它压暗故不用，但高度/坡度必须留，
+			// 否则整片岩浆是平涂、看不出熔岩湖的高低与边缘。
+			out[i] = isEmissive(i)
+					? SurfaceShading.shade(brighten(rgb(i)), reliefs[i])
+					: SurfaceShading.shade(rgb(i), factors[i]);
 		}
 		return out;
 	}

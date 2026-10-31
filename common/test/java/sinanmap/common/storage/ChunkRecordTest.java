@@ -318,19 +318,21 @@ class ChunkRecordTest {
 	}
 
 	@Test
-	@DisplayName("逐像素等价：同一份输入，着色结果与打包前的实现完全一致")
+	@DisplayName("逐像素等价：同一份输入，着色结果稳定（golden 值随自发光取样起伏的改动更新过）")
 	void toColorsIsPixelIdenticalToPreChange() {
-		// golden 值由"每列五个独立数组"的旧实现生成，覆盖负高度、超 255 高度、自发光、水、无数据
+		// golden 值由"每列五个独立数组"的实现生成，覆盖负高度、超 255 高度、自发光、水、无数据。
+		// 第二十八批给自发光方块（岩浆）加了"只含地形起伏、不含光照"的系数（见 SurfaceShading#reliefFactor），
+		// 自发光列的着色结果随之变化，这里的 golden 值已按新实现重新生成。
 		ChunkRecord record = goldenRecord();
 
 		int[] day = record.toColors(REFERENCE_Y, 0);
-		assertEquals(-821963664, Arrays.hashCode(day), "正午逐像素结果应与旧实现一致");
-		assertEquals(-7012537, day[1], "普通陆地列");
+		assertEquals(-571328612, Arrays.hashCode(day), "正午逐像素结果应与当前实现一致");
+		assertEquals(-8200130, day[1], "普通陆地列");
 		assertEquals(-16572899, day[16], "自发光/普通列逐像素一致");
 		assertEquals(0, day[17], "无数据列全透明（17 % 17 == 0）");
 
-		assertEquals(1508972870, Arrays.hashCode(record.toColors(REFERENCE_Y, 11)), "夜晚逐像素一致");
-		assertEquals(1057288421, Arrays.hashCode(record.toColors(80, 4)), "另一参考高度也一致");
+		assertEquals(1759607922, Arrays.hashCode(record.toColors(REFERENCE_Y, 11)), "夜晚逐像素一致");
+		assertEquals(1769520597, Arrays.hashCode(record.toColors(80, 4)), "另一参考高度也一致");
 	}
 
 	/** 确定性地造一块覆盖各种边界的区块：负高度、超 255 高度、自发光、水、无数据。 */

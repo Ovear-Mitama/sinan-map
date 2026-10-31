@@ -97,7 +97,7 @@ public final class MinimapSettings {
 	public static final double MAX_COMPASS_SCALE = 2.0;
 
 	/** 方位字母倍率的默认值：基准大小。 */
-	public static final double DEFAULT_COMPASS_SCALE = 1.0;
+	public static final double DEFAULT_COMPASS_SCALE = 0.8;
 
 	// ---------------------------------------------------------------- 性能（默认全自动）
 

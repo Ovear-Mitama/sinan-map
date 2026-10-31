@@ -9,6 +9,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.toasts.AdvancementToast;
+import net.minecraft.client.gui.components.toasts.RecipeToast;
 import net.minecraft.client.gui.components.toasts.Toast;
 import net.minecraft.client.gui.components.toasts.ToastManager;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -87,7 +88,7 @@ public final class MinimapHud {
 	/** 每次缩放按键的倍率。 */
 	public static final double ZOOM_STEP = 1.15;
 
-	/** 玩家标记在屏幕上的边长相对小地图短边的比例。 */
+	/** 玩家标记在屏幕上的边长相对小地图短边的比例（固定 GUI 比例 → 跟着界面等比放大）。 */
 	private static final double MARKER_SCREEN_RATIO = 0.12;
 
 	private final MinimapSettings settings;
@@ -194,6 +195,22 @@ public final class MinimapHud {
 	public void zoomBy(double factor) {
 		settings.setAutoZoom(false);
 		settings.setBlocksPerPixel(zoom.target() * factor);
+	}
+
+	/**
+	 * 把缩放目标设成一个<b>绝对值</b>（每设备像素多少方块），会关闭自动缩放。
+	 *
+	 * <p>给"按住 - / + 连续缩放"用（见 {@code SinanKeyMappings}）：那一路按"按住多久"直接算出目标值，
+	 * 不再一次一格地跳，小地图渲染里的 {@link ZoomAnimator} 会把它平滑地追平，免得一格一停。
+	 */
+	public void zoomTo(double value) {
+		settings.setAutoZoom(false);
+		settings.setBlocksPerPixel(value);
+	}
+
+	/** 当前缩放目标值（每设备像素多少方块），供连续缩放算基准用。 */
+	public double zoomTarget() {
+		return zoom.target();
 	}
 
 	private void render(GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
@@ -628,23 +645,31 @@ public final class MinimapHud {
 	}
 
 	/**
-	 * 成就/进度弹窗现在有没有在显示：有就让开一个槽位的高度。
+	 * 右上角弹窗现在有没有在显示：有就让开一个槽位的高度。
 	 *
 	 * <p><b>用的是哪个 API</b>：本版本（26.1.2）没有 {@code ToastComponent} 这个名字，对应类是
 	 * {@link ToastManager}，入口是 {@link Minecraft#getToastManager()}。它<b>没有</b>公开的
 	 * {@code isEmpty()} / {@code getToastCount()}，可见列表与空闲槽计数都是私有的；能用的公开查询只有
 	 * {@link ToastManager#getToast(Class, Object)}（按"弹窗类型 + token"取那一条）。幸而
-	 * {@link AdvancementToast} 没有覆写 {@link Toast#getToken()}，它的 token 恒为 {@link Toast#NO_TOKEN}，
-	 * 于是 {@code getToast(AdvancementToast.class, Toast.NO_TOKEN)} 就能拿到此刻正在显示（或排队等着显示）
-	 * 的那条成就弹窗，为 {@code null} 即没有。全程公开 API，不挂 Mixin、不用反射。
+	 * {@link AdvancementToast} 与 {@link RecipeToast} 都没有覆写 {@link Toast#getToken()}，它们的
+	 * token 恒为 {@link Toast#NO_TOKEN}，于是 {@code getToast(XxxToast.class, Toast.NO_TOKEN)} 就能拿到
+	 * 此刻正在显示（或排队等着显示）的那条弹窗，为 {@code null} 即没有。全程公开 API，不挂 Mixin、不用反射。
 	 *
-	 * <p>已知取舍：一是它把<b>排队中</b>的弹窗也算进来，槽位占满时会让得早一点；二是它只认
-	 * {@link AdvancementToast}，也数不出"同时有几条"，所以固定让开一个槽位（{@link Toast#SLOT_HEIGHT}）。
-	 * 多条成就排队时可能让得不够——本版本没有公开 API 能数出条数。
+	 * <p><b>两类弹窗都要认</b>：成就/进度（{@link AdvancementToast}）与<b>配方解锁</b>（{@link RecipeToast}）
+	 * 都画在右上角同一列。只认前者的话，玩家一解锁配方就会盖住小地图。
+	 *
+	 * <p>已知取舍：它把<b>排队中</b>的弹窗也算进来，槽位占满时会让得早一点；也数不出"同时有几条"，
+	 * 所以固定让开一个槽位（{@link Toast#SLOT_HEIGHT}）——本版本没有公开 API 能数出条数。
 	 */
 	private static double advancementToastShift() {
 		ToastManager toasts = Minecraft.getInstance().getToastManager();
-		return toasts.getToast(AdvancementToast.class, Toast.NO_TOKEN) == null ? 0.0 : Toast.SLOT_HEIGHT;
+		if (toasts.getToast(AdvancementToast.class, Toast.NO_TOKEN) != null) {
+			return Toast.SLOT_HEIGHT;
+		}
+		if (toasts.getToast(RecipeToast.class, Toast.NO_TOKEN) != null) {
+			return Toast.SLOT_HEIGHT;
+		}
+		return 0.0;
 	}
 
 	/**
@@ -871,7 +896,12 @@ public final class MinimapHud {
 		graphics.disableScissor();
 	}
 
-	/** 方位字贴边时的<b>最小</b>边距（GUI 像素）：字比它大时按实际尺寸让开，见 {@link #drawCompass}。 */
+	/**
+	 * 方位字贴边时的<b>基准</b>边距（GUI 像素），实际边距再乘当前字号倍率（见 {@link #drawCompass}）。
+	 *
+	 * <p>不直接用固定值：字号调小之后固定边距会让字显得离边缘很远。
+	 * 乘上字号倍率后，字大字小都是"贴着边缘"的观感。
+	 */
 	private static final double COMPASS_EDGE_MARGIN = 4.0;
 
 	/** 四个方位的世界方向 {@code (dx, dz)}——北 = -Z、东 = +X、南 = +Z、西 = -X。 */
@@ -939,9 +969,10 @@ public final class MinimapHud {
 			double width = font.width(label) * scale;
 			double height = font.lineHeight * scale;
 			// 落点要按"这个字的实际尺寸"内缩：字以中心对准落点、背景再外扩 1px，所以边界至少要
-			// 让出 半个字宽 / 半个行高 + 1px；取不到时退回固定边距，字母的观感与以前一致
-			double halfExtentX = Math.max(COMPASS_EDGE_MARGIN, width / 2.0 + COMPASS_BACKGROUND_PAD);
-			double halfExtentY = Math.max(COMPASS_EDGE_MARGIN, height / 2.0 + COMPASS_BACKGROUND_PAD);
+			// 让出 半个字宽 / 半个行高 + 1px；边距随字号缩放（见 COMPASS_EDGE_MARGIN），确保贴边
+			double margin = COMPASS_EDGE_MARGIN * scale;
+			double halfExtentX = Math.max(margin, width / 2.0 + COMPASS_BACKGROUND_PAD);
+			double halfExtentY = Math.max(margin, height / 2.0 + COMPASS_BACKGROUND_PAD);
 			double dx = COMPASS_DIRECTIONS[i][0];
 			double dz = COMPASS_DIRECTIONS[i][1];
 			double dirX = dx * cos - dz * sin;

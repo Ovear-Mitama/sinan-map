@@ -96,6 +96,9 @@ public final class WaypointRenderer {
 	 *
 	 * <p>展开的路径点宽度偏大，只把底板调窄会让长名字溢出（文字与底板同一套矩阵画），所以整条标记一起缩。
 	 * 命中判定（{@link #hitBox}）必须乘同一系数，否则会"看着在标记上、其实没命中"。<b>只作用于世界地图</b>。
+	 *
+	 * <p>取固定 <b>GUI 比例</b>：窗口 / GUI 缩放变化时整条标记跟着界面等比放大，相对界面的比例不变
+	 * （曾试过"设备像素"口径，最大化后图标相对小地图显得变小，已回退）。
 	 */
 	private static final float WORLD_MAP_SCALE = 0.75F;
 
@@ -109,7 +112,7 @@ public final class WaypointRenderer {
 	/**
 	 * 世界地图上展开标签的宽度上限（屏幕 GUI 像素）：名字再长也只按字符截断加省略号，不靠继续缩小整体去硬塞。
 	 *
-	 * <p>标签在<b>局部坐标系</b>里排版、再乘 {@link WORLD_MAP_SCALE} 与 {@link #MARKER_SCALE}，换算成局部单位要除以这两档；
+	 * <p>标签在<b>局部坐标系</b>里排版、再乘 {@link #WORLD_MAP_SCALE} 与 {@link #MARKER_SCALE}，换算成局部单位要除以这两档；
 	 * 再减左右内边距就是文字宽度上限。<b>只作用于世界地图</b>（HUD 与小地图不截断）。
 	 */
 	private static final int WORLD_MAP_MAX_LABEL_PIXELS = 96;
@@ -169,7 +172,7 @@ public final class WaypointRenderer {
 	 */
 	private static final double HIT_HYSTERESIS = 3.0;
 
-	/** 小地图上的整体缩放：那么小的地方按原尺寸画会把地形盖住。 */
+	/** 小地图上的整体缩放：那么小的地方按原尺寸画会把地形盖住（固定 GUI 比例 → 跟着界面等比）。 */
 	public static final float MINIMAP_SCALE = 0.7F;
 
 	/** 一屏最多画多少条：路径点再多也不该把地图糊死。 */

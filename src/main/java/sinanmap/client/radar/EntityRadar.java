@@ -137,29 +137,53 @@ public final class EntityRadar {
 	private static final int DOT_OUTLINE = 0xE014141A;
 
 	/**
-	 * 生物图标的边长（GUI 像素）——<b>两个地图共用这一条规则</b>，所以天生一致。
+	 * 生物图标的边长（<b>GUI 像素</b>，以 {@value #ICON_REFERENCE_GUI_SCALE} 倍 GUI 缩放为基准）——
+	 * <b>两个地图共用这一条规则</b>，所以天生一致。
 	 *
-	 * <p><b>固定 GUI 像素，不跟窗口、GUI 缩放、地图缩放走</b>：GUI 像素是"界面上的一个点"，
-	 * 窗口大小变化时图标相对界面的比例都一样，改 GUI 缩放它也跟着缩放，观感稳定。
+	 * <p><b>为什么不是简单的固定值</b>：完全固定 GUI 像素时，最大化窗口（GUI 缩放变大）图标会跟着
+	 * 明显变大；完全固定设备像素时，最大化后它相对小地图又显得变小。两头都不合适，所以取
+	 * <b>部分跟随</b>：GUI 尺寸按 {@code guiScale^-0.3} 变化（设备尺寸按 {@code guiScale^0.7} 增长，
+	 * 介于"完全跟随"和"完全不变"之间）——窗口化时图标够大，最大化时不至于突兀变大。
 	 *
-	 * <p>试过并否掉的<b>固定设备像素</b>（{@code 预算 / guiScale}）：小窗口时 MC 自动 GUI 缩放降档，
-	 * 折回来的 GUI 值变得很大，相对屏幕看就是"很大很大"。
+	 * <p><b>实测校准</b>：窗口化（guiScale 2）用 {@value} GUI；最大化（guiScale 3~4）经指数折算后
+	 * 约 4.9~5.4 GUI，正是用户认可的"最大化下正常"的那一档。
 	 */
 	private static double radarIconSize() {
-		return ICON_GUI_PIXELS;
+		double guiScale = Math.max(1.0, Minecraft.getInstance().getWindow().getGuiScale());
+		return ICON_GUI_PIXELS * Math.pow(ICON_REFERENCE_GUI_SCALE / guiScale, ICON_FOLLOW_EXPONENT);
 	}
 
 	/**
-	 * 见 {@link #radarIconSize}：图标边长（GUI 像素）。
+	 * 见 {@link #radarIconSize}：<b>guiScale 2 时</b>的图标边长（GUI 像素）。
 	 *
-	 * <p><b>6.0 → {@value}</b>：用户反馈"整体小一点"，全生物（头像、刷怪蛋/掉落物图标、菱形标记，
-	 * 以及跟着图标矩阵一起画的右下角高度箭头）统一降到这一档。要整体再大一档/小一档<b>只改这一个数</b>。
+	 * <p><b>5.0 → 5.5 → 6.0 → {@value}</b>：一路按"整体小一点 / 太大 / 最大化下正常但窗口化偏小"
+	 * 来回试出来的当前落点（窗口化基准）。要整体再大一档/小一档<b>只改这一个数</b>；
+	 * 注意同时要动 {@link #ICON_FOLLOW_EXPONENT} 才能把"最大化那一端"保持在原来的大小（见下）。
+	 *
+	 * <p><b>注意</b>：这个数是 <b>GUI 像素</b>（会跟随界面部分放大），不是设备像素——guiScale 2 下
+	 * {@value} GUI 等于 13.6 个设备像素，和"设备像素口径的 5.5"完全不同，别混。
 	 *
 	 * <p><b>再往下的代价</b>：最小体型档（{@link #SMALL_ICON_MIN_SCALE}）乘完就只剩三四个像素，
 	 * 兔那种叠了两档的（见 {@link #RABBIT_ICON_SCALE}）会掉到 3 像素以下、糊成一团，
 	 * 所以"整体变小"要和那些额外档位一起看，不要单独把这里压到底。
 	 */
-	private static final double ICON_GUI_PIXELS = 5.5;
+	private static final double ICON_GUI_PIXELS = 6.8;
+
+	/**
+	 * {@link #ICON_GUI_PIXELS} 对应的基准 GUI 缩放：窗口化实测为 2（日志里的一帧 96×64 GUI × 缩放 2）。
+	 */
+	private static final double ICON_REFERENCE_GUI_SCALE = 2.0;
+
+	/**
+	 * 部分跟随指数（越小越"跟随界面"，越大越"固定物理大小"）：
+	 * {@code 0} = 完全跟随（纯 GUI 像素）、{@code 1} = 完全固定（纯设备像素）。
+	 *
+	 * <p><b>0.3 → {@value}</b>：用户要"窗口化再大一点"，但又认可最大化下的大小，所以不能只抬基准
+	 * （那样两头一起变大）。调大指数后，窗口化（guiScale 2）按 {@link #ICON_GUI_PIXELS} 取更大值，
+	 * 而 guiScale 4 处的折算结果仍 ≈5.0 GUI（用户认可的"最大化正常"档）：
+	 * {@code 6.8 × (2/4)^0.44 ≈ 5.0}。改动前先按这个式子验算两端。
+	 */
+	private static final double ICON_FOLLOW_EXPONENT = 0.44;
 
 	/** 小体型判据：碰撞箱<b>宽 × 高</b>小于这个值就算小生物（见 {@link #iconScaleFor}）。 */
 	private static final float SMALL_ENTITY_MIN_METRIC = 0.75F;
@@ -1063,19 +1087,46 @@ public final class EntityRadar {
 	 * <p>用菱形而不是方形色块，是因为方色块和真头像一样都是"方块"、看起来像"头像没画出来"，菱形一眼
 	 * 就知道是<b>标记</b>；尺寸也小一档（见 {@link #MARKER_DIAMOND_SIZE}），不跟真头像抢地方。
 	 *
-	 * <p><b>用贴图而不是自己拼几何</b>：形状与描边都画在 {@value #MARKER_DIAMOND_TEXTURE} 里，这里只负责
-	 * "贴上去 + 按标记类型着色"（{@code blitSprite} 的颜色参数乘到贴图上，一张白菱形就能出紫/黄/红三种）。
+	 * <p><b>用行填充拼，不用贴图</b>：曾经用 {@link #MARKER_DIAMOND_TEXTURE}（白芯+深边的 11×11 贴图）
+	 * + {@code blitSprite} 着色。贴图在小尺寸上会被线性过滤把四个斜角淡化成圆角，缩到三四个像素时
+	 * 直接糊成一块<b>方形</b>。这里改成按行 {@code fill}：每一行横跨几格
+	 * 由离中心的距离决定，画出的是像素级的锐利菱形，任何尺寸都不糊、字形也不随分辨率变。
+	 *
+	 * <p>颜色用在<b>本体</b>上（配合高度渐变的 {@code fadeColor}），描边固定 {@link #DOT_OUTLINE}
+	 * 一圈、不参与渐变（与旧贴图行为一致）。
 	 *
 	 * @param size 绘制边长（图标坐标，满框是 {@value #ICON_HALF} 的两倍）；见 {@link #MARKER_DIAMOND_SIZE}
 	 *             与 {@link #DIAMOND_MODE_ICON_SIZE}——两处用不同大小，菱形档画得更大、单独标记画得小
 	 */
 	private static void drawDiamond(GuiGraphicsExtractor graphics, int color, int size) {
-		int half = size / 2;
-		graphics.blitSprite(RenderPipelines.GUI_TEXTURED, MARKER_DIAMOND_TEXTURE,
-				-half, -half, size, size, color);
+		// 描边先画（在下层）：整颗大一圈的菱形用描边色铺，本体再缩一圈盖上去。
+		// 本体缩 2 像素（每边 1），描边恰好露出 1 像素一圈。
+		drawDiamondRows(graphics, size, DOT_OUTLINE);
+		drawDiamondRows(graphics, Math.max(1, size - 2), color);
 	}
 
-	/** 见 {@link #drawDiamond}：菱形贴图（自绘，白芯 + 深色边，便于着色）。 */
+	/**
+	 * 按行画一颗实心菱形（以原点为中心）。
+	 *
+	 * <p>第 {@code row} 行的宽度 = {@code size} - 离中心行距离的两倍（约）：中间行最宽、上下两端收成一点，
+	 * 于是整颗是 45° 直边的真菱形。逐行用 1 像素高的矩形拼，落点全在整像素上，缩放多少都保持笔直。
+	 */
+	private static void drawDiamondRows(GuiGraphicsExtractor graphics, int size, int color) {
+		if (size <= 0) {
+			return;
+		}
+		double center = (size - 1) / 2.0;
+		for (int row = 0; row < size; row++) {
+			double distance = Math.abs(row - center);
+			int width = Math.max(1, size - (int) Math.round(2.0 * distance));
+			int left = -width / 2;
+			int y = row - (int) center;
+			graphics.fill(left, y, left + width, y + 1, color);
+		}
+	}
+
+	/** 见 {@link #drawDiamond}：曾经的菱形贴图。改为几何绘制后不再使用，保留常量避免误删资源。 */
+	@SuppressWarnings("unused")
 	private static final Identifier MARKER_DIAMOND_TEXTURE =
 			Identifier.fromNamespaceAndPath(SinanConstants.MOD_ID, "marker_diamond");
 
@@ -1083,14 +1134,16 @@ public final class EntityRadar {
 	 * 单独标记（投射物 / 点燃的 TNT / 未知实体）那颗菱形的绘制边长（图标坐标，满框是
 	 * {@value #ICON_HALF} 的两倍）。
 	 *
-	 * <p><b>6 → {@value}</b>：原来画出来只有 2 个 GUI 像素出头，配合 16×16 的贴图就是"8 倍缩小 + 线性
-	 * 过滤"，糊成一团灰点。放大到 {@value} 之后落到屏幕上约 3.4 个 GUI 像素，轮廓才立得住。
+	 * <p><b>10 → 8 → {@value}</b>：几何绘制后不再受贴图降采样限制，可以再收一档。
+	 * 落到屏幕上（图标满框为 {@value #ICON_GUI_PIXELS} GUI 像素）约 3 个 GUI 像素，仍一眼可辨。
 	 */
-	private static final int MARKER_DIAMOND_SIZE = 10;
+	private static final int MARKER_DIAMOND_SIZE = 6;
 
 	/**
-	 * "无图标（菱形）"档下每只生物那颗菱形的绘制边长。取 {@value}：比单独标记再大一档，接近生物头像
-	 * 的体积（{@value #ICON_GUI_PIXELS} GUI 像素），整片雷达才不至于是一片看不清的糊点。
+	 * "无图标（菱形）"档下每只生物那颗菱形的绘制边长。
+	 *
+	 * <p>10 → 8 → {@value}：收到 8 之后仍偏小，于是定为 {@value}——它要在整片雷达上
+	 * 一眼看出"哪里有东西"，太小就与噪点无异。几何绘制（不是贴图）所以放大也不会糊。
 	 */
-	private static final int DIAMOND_MODE_ICON_SIZE = 12;
+	private static final int DIAMOND_MODE_ICON_SIZE = 10;
 }

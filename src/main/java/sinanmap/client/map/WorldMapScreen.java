@@ -120,6 +120,15 @@ public final class WorldMapScreen extends Screen {
 	private static final double ZOOM_STEP = 1.18;
 
 	/**
+	 * <b>按住 - / + 不放</b>时每格缩放的倍率：取 {@value}（比单击/滚轮的 {@link #ZOOM_STEP} 平缓）。
+	 *
+	 * <p>"先慢慢、后突然变快"的根源：按住时目标按每格 {@value #ZOOM_STEP}（=1.18）指数叠加，
+	 * 叠加得越久相对速度越快——前半秒还能看清、后面越来越猛。按住改用更小的每格倍率 + 固定格时
+	 * （{@link #HOLD_STEP_NANOS}），单位时间的变化量被压平，观感接近匀速。
+	 */
+	private static final double HOLD_ZOOM_STEP = 1.08;
+
+	/**
 	 * 定位 / 路径点跳转过场的"剩余距离衰减系数"：每过 <b>1/60 秒</b>，还没走完的距离就乘上这个值。
 	 *
 	 * <p>起步那一下最快（第一帧约走 14%），越接近目标越慢，所以是<b>软着陆</b>而不是急停。
@@ -893,6 +902,12 @@ public final class WorldMapScreen extends Screen {
 		drawNanosMax = Math.max(drawNanosMax, draw);
 		frameNanosMax = Math.max(frameNanosMax, total);
 		framesThisSecond++;
+		// 面板用的滑动平均（跨过每秒清零点，见 perfFrameMillisEma 的说明）
+		double frameMillis = total / 1.0e6;
+		perfFrameMillisEma = perfFrameEmaInitialized
+				? perfFrameMillisEma * 0.9 + frameMillis * 0.1
+				: frameMillis;
+		perfFrameEmaInitialized = true;
 		if (total >= SLOW_FRAME_MILLIS * 1_000_000L) {
 			LOGGER.info("世界地图慢帧 | 本帧 {} ms（填充 {} / 作废补画 {} / 绘制 {}）| 页={} 问={} 画={} 待补={} 传={}",
 					ms(total), ms(fill), ms(refresh), ms(draw),
@@ -1584,7 +1599,7 @@ public final class WorldMapScreen extends Screen {
 		if (elapsed <= 0L) {
 			return;
 		}
-		double perStep = pressedButton == BUTTON_ZOOM_IN ? 1.0 / ZOOM_STEP : ZOOM_STEP;
+		double perStep = pressedButton == BUTTON_ZOOM_IN ? 1.0 / HOLD_ZOOM_STEP : HOLD_ZOOM_STEP;
 		double steps = elapsed / (double) HOLD_STEP_NANOS;
 		stepZoomTo(holdBaseTarget * Math.pow(perStep, steps), width / 2.0, height / 2.0, false);
 	}
@@ -1863,7 +1878,14 @@ public final class WorldMapScreen extends Screen {
 
 	/** 按下 - / +：先走一格（与点按钮一致），再进入"每帧按时间比例推进"的连续缩放。 */
 	private boolean pressZoomKey(boolean zoomIn) {
-		zoomKeyHold = zoomIn ? 1 : 2;
+		int dir = zoomIn ? 1 : 2;
+		// GLFW 按住时会自动重复发"按下"事件（起手延迟约 500ms、之后每 ~30ms 一次）。
+		// 已经按着同向的键就不重复走"再跳一格 + 重置基准"——那会让目标值在重复事件上
+		// 每一下多跳一格、把匀速的连续推进搅成"突然加速"（这正是"先慢慢、后突然变快"的来源）。
+		if (zoomKeyHold == dir) {
+			return true;
+		}
+		zoomKeyHold = dir;
 		zoomKeyStartNanos = System.nanoTime();
 		boolean acted = zoomStepAtScreenCenter(zoomIn ? 1.0 / ZOOM_STEP : ZOOM_STEP);
 		// 基准取"按下那一格之后"的目标值：否则连续推进算出的绝对值会把刚走的那一格抹掉
@@ -1886,7 +1908,7 @@ public final class WorldMapScreen extends Screen {
 		if (zoomKeyHold == 0) {
 			return;
 		}
-		double perStep = zoomKeyHold == 1 ? 1.0 / ZOOM_STEP : ZOOM_STEP;
+		double perStep = zoomKeyHold == 1 ? 1.0 / HOLD_ZOOM_STEP : HOLD_ZOOM_STEP;
 		double steps = (now - zoomKeyStartNanos) / (double) HOLD_STEP_NANOS;
 		stepZoomTo(zoomKeyBaseTarget * Math.pow(perStep, steps), width / 2.0, height / 2.0, false);
 	}
@@ -2705,6 +2727,15 @@ public final class WorldMapScreen extends Screen {
 	private long frameNanosMax;
 	private int framesThisSecond;
 
+	/**
+	 * 性能面板用的<b>指数滑动平均</b>毫秒/帧。不做成"每秒清零再统计"：
+	 * 那套计数是给每秒一条的诊断日志用的，面板每帧都读它的话，每秒起始那几帧会看到
+	 * "0 FPS"然后慢慢涨——就是用户看到的"帧率一会就从 0 开始算"。滑动平均跨过清零点，
+	 * 面板上永远是平滑稳定的值。
+	 */
+	private double perfFrameMillisEma;
+	private boolean perfFrameEmaInitialized;
+
 	private void logComposition() {
 		long now = System.nanoTime();
 		if (now - lastCompositionLogNanos < COMPOSITION_LOG_NANOS) {
@@ -3418,7 +3449,7 @@ public final class WorldMapScreen extends Screen {
 		double markerX = originGuiX() + (player.getX() - originWorldX()) / perGui;
 		double markerY = originGuiZ() + (player.getZ() - originWorldZ()) / perGui;
 		// 箭尖到中心只有贴图边长的一部分（ARROW_RATIO），描边还会再放大一圈，所以这里的边长要比想要的
-		// 箭头大一点（小地图那边用 MARKER_SCREEN_RATIO）
+		// 箭头大一点（跟随界面等比、固定 GUI 像素）
 		double markerSize = Math.clamp(height * 0.032, 7.0, 15.0);
 		if (markerX < -markerSize || markerY < -markerSize
 				|| markerX > width + markerSize || markerY > height + markerSize) {
@@ -3531,16 +3562,21 @@ public final class WorldMapScreen extends Screen {
 		drawButtonTooltip(graphics, mouseX, mouseY);
 	}
 
-	/** 按钮的提示语言键。 */
-	private static String buttonTipKey(int button) {
+	/**
+	 * 按钮的提示语言键；返回 null 表示这一颗按钮<b>不显示悬停提示</b>。
+	 *
+	 * <p>性能按钮的提示刻意做成极简的"性能"两字（见语言文件 {@code tip.perf}）：它本身就是
+	 * "看一眼占用"的入口，长句说明反而把左上角这一片弄乱（用户要求）。
+	 */
+	private static @Nullable String buttonTipKey(int button) {
 		return switch (button) {
 			case BUTTON_SETTINGS -> "screen.sinanmap.world_map.tip.settings";
 			case BUTTON_WAYPOINTS -> "screen.sinanmap.world_map.tip.waypoints";
 			case BUTTON_DIMENSION -> "screen.sinanmap.world_map.tip.dimension";
 			case BUTTON_LAYER -> "screen.sinanmap.world_map.tip.layer";
-			case BUTTON_PERF -> "screen.sinanmap.world_map.tip.perf";
 			case BUTTON_LOCATE -> "screen.sinanmap.world_map.tip.locate";
 			case BUTTON_ZOOM_IN -> "screen.sinanmap.world_map.tip.zoom_in";
+			case BUTTON_PERF -> "screen.sinanmap.world_map.tip.perf";
 			default -> "screen.sinanmap.world_map.tip.zoom_out";
 		};
 	}
@@ -3556,7 +3592,12 @@ public final class WorldMapScreen extends Screen {
 			// 按下的那一下意图已经明确，提示先收起来，别挡着
 			return;
 		}
-		Component text = Component.translatable(buttonTipKey(hoveredButton));
+		String tipKey = buttonTipKey(hoveredButton);
+		if (tipKey == null) {
+			// 这颗按钮不显示悬停提示（见 buttonTipKey）
+			return;
+		}
+		Component text = Component.translatable(tipKey);
 		int pad = 3;
 		int boxWidth = font.width(text) + pad * 2;
 		int boxHeight = font.lineHeight + pad * 2;
@@ -4337,11 +4378,10 @@ public final class WorldMapScreen extends Screen {
 		if (!perfOpen) {
 			return;
 		}
-		double perFrameMillis = framesThisSecond == 0 ? 0.0
-				: (fillNanosSum + drawNanosSum) / (double) framesThisSecond / 1.0e6;
+		double perFrameMillis = perfFrameMillisEma;
 		String[] lines = {
 				text("perf.storage", megabytes(mapStorageBytes())),
-				text("perf.cpu", "%.2f".formatted(perFrameMillis), framesThisSecond),
+				text("perf.cpu", "%.2f".formatted(perFrameMillis)),
 				text("perf.gpu", tiles.residentPageCount(), megabytes(tiles.estimatedTextureBytes())),
 				text("perf.loading", viewPageCount(), pendingOfView(),
 						tiles.frameAsks(), tiles.framePaints()),

@@ -70,20 +70,21 @@ final class BlockTextureColors {
 
 	/**
 	 * 岩浆采样步长（纹素/格）：取 {@value #LAVA_SAMPLE_STEP}，小图边长 {@value #LAVA_TILE_SIZE}，
-	 * 整片岩浆走完一个循环约 53 格。
+	 * 整片岩浆走完一个循环约 32 格。
 	 *
-	 * <p>取 {@value #LAVA_SAMPLE_STEP}（原 0.10）：0.10 时一片小岩浆池只覆盖不到一个纹素，颜色几乎不变；
-	 * 调到 0.15 后同样的池子能走过好几个纹素，明暗过渡才看得出来，同时仍远小于 1 纹素/格——不会跳色。
+	 * <p>0.15 → {@value}：之前一片小岩浆池还是只走过一两个纹素，明暗过渡太稀、看起来仍接近纯色；
+	 * 加大到 {@value} 后过渡更密更明显。仍远小于 1 纹素/格，不会跳色出斑点。
 	 */
-	private static final float LAVA_SAMPLE_STEP = 0.15F;
+	private static final float LAVA_SAMPLE_STEP = 0.25F;
 
 	/**
 	 * 采样相位的"平滑扰动"幅度（纹素）与频率。
 	 *
 	 * <p>按 16 格一挡加偏移会在格边界跳变（实测总亮度跳变 119），画出来是一道道硬缝；
 	 * 改成随位置连续变化的正弦扰动，既能打散重复图案又处处可导、不产生缝。
+	 * <b>1.0 → {@value}</b>：步长加大后扰动也加大，图案才铺得开、不显得重复死板。
 	 */
-	private static final float LAVA_WARP = 1.0F;
+	private static final float LAVA_WARP = 2.0F;
 	private static final float LAVA_WARP_FREQ = 0.055F;
 
 	/**
@@ -94,8 +95,15 @@ final class BlockTextureColors {
 	 */
 	private static final int GLOW_FLOOR_TOTAL = 480;
 
-	/** 抬亮后的总亮度上限，避免整片岩浆过曝、糊成一片纯亮色。 */
-	private static final int GLOW_CEIL_TOTAL = 600;
+	/**
+	 * 抬亮后的总亮度上限，避免整片岩浆过曝、糊成一片纯亮色。
+	 *
+	 * <p>600 → 680 → 760 → {@value}：前几次一路放宽想加强对比，结果<b>亮部反而过曝</b>——
+	 * 岩浆本色上限还要乘自发光起伏系数（最高 1.08，见 {@code SurfaceShading#EMISSIVE_RELIEF_MAX}），
+	 * 760×1.08 已超三通道之和的上限 765、被逐通道钳成偏白，显得"越过渡越亮、不自然"。
+	 * 收到 {@value} 后乘出来最高约 670，仍有明显过渡、不再发白。
+	 */
+	private static final int GLOW_CEIL_TOTAL = 620;
 
 	/** 贴图名 → 平均色。多线程共用，见类注释的线程模型。 */
 	private final Map<Identifier, Integer> bySprite = new ConcurrentHashMap<>();

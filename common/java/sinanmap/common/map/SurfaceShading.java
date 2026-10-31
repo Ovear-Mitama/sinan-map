@@ -68,6 +68,17 @@ public final class SurfaceShading {
 	public static final double MIN_TOTAL_FACTOR = 0.10;
 
 	/**
+	 * 自发光方块（岩浆）的"地形起伏"因子下限与上限。
+	 *
+	 * <p>岩浆也要能看出表面的高低：完全平涂会是一块死板的纯色，看不出熔岩湖的起伏与边缘。
+	 * 但它<b>不能</b>乘光照项（{@link #lightFactor}）——自发光方块本就恒亮，乘光照会在夜里/洞里被压暗。
+	 * 所以只取高度×坡度、且把范围收在 1.0 两侧的窄带里，既出层次又不会让岩浆忽明忽暗。
+	 */
+	public static final double EMISSIVE_RELIEF_MIN = 0.88;
+
+	public static final double EMISSIVE_RELIEF_MAX = 1.08;
+
+	/**
 	 * 三项乘积的上限。
 	 *
 	 * <p>与两项各自的上限<b>配套</b>：两项都取满时乘积约 {@code 1.09 * 1.07 = 1.166}，所以给到
@@ -134,6 +145,17 @@ public final class SurfaceShading {
 	/** 按已算好的系数着色，供需要自行调整系数的调用方使用。 */
 	public static int shade(int rgb, double factor) {
 		return scale(rgb, Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR));
+	}
+
+	/**
+	 * 只算"地形起伏"（高度 × 坡度，<b>不含光照</b>），给自发光方块（岩浆）用。
+	 *
+	 * <p>见 {@link #EMISSIVE_RELIEF_MIN}：岩浆要能看出表面高低，但又不能用光照项（会把它压暗）。
+	 * 结果收在 {@code [EMISSIVE_RELIEF_MIN, EMISSIVE_RELIEF_MAX]} 的窄带里，围绕 1.0 起伏。
+	 */
+	public static double reliefFactor(int height, int referenceY, int westHeight, int northHeight) {
+		double factor = heightFactor(height, referenceY) * slopeFactor(height, westHeight, northHeight);
+		return Math.clamp(factor, EMISSIVE_RELIEF_MIN, EMISSIVE_RELIEF_MAX);
 	}
 
 	/**

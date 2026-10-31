@@ -29,7 +29,7 @@ import sinanmap.common.net.TrackedPlayersS2C;
  */
 public final class TrackedPlayers {
 
-	/** 头像边长（GUI 像素）。 */
+	/** 头像边长（固定 GUI 像素 → 跟着界面等比放大）。 */
 	public static final int ICON_SIZE = 8;
 
 	/** 取不到皮肤（客户端还没有这个玩家的资料）时的兜底底色。 */
@@ -76,19 +76,20 @@ public final class TrackedPlayers {
 	 */
 	public static void draw(GuiGraphicsExtractor graphics, Font font,
 			double screenX, double screenY, TrackedPlayersS2C.Player entry, float opacity) {
-		int left = (int) Math.round(screenX) - ICON_SIZE / 2;
-		int top = (int) Math.round(screenY) - ICON_SIZE / 2;
+		int size = ICON_SIZE;
+		int left = (int) Math.round(screenX) - size / 2;
+		int top = (int) Math.round(screenY) - size / 2;
 		Identifier skin = skinTexture(entry.id());
 		if (skin != null) {
 			graphics.blit(RenderPipelines.GUI_TEXTURED, skin, left, top, 8.0F, 8.0F,
-					ICON_SIZE, ICON_SIZE, 8, 8, 64, 64, withAlpha(0xFFFFFFFF, opacity));
+					size, size, 8, 8, 64, 64, withAlpha(0xFFFFFFFF, opacity));
 		} else {
-			graphics.fill(left, top, left + ICON_SIZE, top + ICON_SIZE,
+			graphics.fill(left, top, left + size, top + size,
 					withAlpha(FALLBACK_COLOR, opacity));
 		}
-		// 名字压在头像下面：头像才 8 像素，不写名字根本认不出是谁
+		// 名字压在头像下面：头像才十几像素，不写名字根本认不出是谁
 		graphics.centeredText(font, Component.literal(entry.name()),
-				(int) Math.round(screenX), top + ICON_SIZE + 2, withAlpha(0xFFFFFFFF, opacity));
+				(int) Math.round(screenX), top + size + 2, withAlpha(0xFFFFFFFF, opacity));
 	}
 
 	/** 从玩家列表里取皮肤贴图；拿不到（离线资料还没到）就返回 null，交给调用方画兜底色块。 */
