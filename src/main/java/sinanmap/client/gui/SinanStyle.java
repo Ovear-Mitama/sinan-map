@@ -16,6 +16,9 @@ public final class SinanStyle {
 	/** 常态暗边框：平时也描一圈，控件边界才清楚。 */
 	public static final int BORDER_IDLE = 0x50000000;
 
+	/** 按钮常态边框：<b>浅白色</b>（半透明白），比悬停暗一档、比滑条/输入框的暗边亮。 */
+	public static final int BORDER_BUTTON_IDLE = 0x66FFFFFF;
+
 	/** 悬停边框（比常态亮）。 */
 	public static final int BORDER_HOVER = 0x90FFFFFF;
 

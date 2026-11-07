@@ -6,7 +6,6 @@ import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
@@ -22,6 +21,8 @@ import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
 import sinanmap.client.gui.ColorPicker;
+import sinanmap.client.gui.SinanButton;
+import sinanmap.client.gui.SinanEditBox;
 import sinanmap.client.gui.SinanStyle;
 import sinanmap.common.coord.WorldPos;
 import sinanmap.common.waypoint.Waypoint;
@@ -130,7 +131,7 @@ public final class WaypointEditScreen extends Screen {
 	private boolean syncingColorText;
 
 	/** "保存"：名字空着时置灰不可按（见 {@link #extractRenderState}）。 */
-	private Button saveButton;
+	private SinanButton saveButton;
 
 	private String group;
 	/** 是不是"正在这一行里输入新分组名"。 */
@@ -224,14 +225,14 @@ public final class WaypointEditScreen extends Screen {
 		int top = formTop();
 		int inputLeft = inputLeft();
 
-		nameBox = new EditBox(font, inputLeft, top + nameTop, FIELD_WIDTH, ROW_HEIGHT,
+		nameBox = new SinanEditBox(font, inputLeft, top + nameTop, FIELD_WIDTH, ROW_HEIGHT,
 				Component.translatable("screen.sinanmap.waypoint.name"));
 		nameBox.setMaxLength(Waypoint.MAX_NAME_LENGTH);
 		// 新建：只有"从聊天分享点进来"那一路才预填名字，其余留空
 		nameBox.setValue(editing != null ? editing.name() : presetName);
 		addRenderableWidget(nameBox);
 
-		shortBox = new EditBox(font, inputLeft, top + shortTop, FIELD_WIDTH, ROW_HEIGHT,
+		shortBox = new SinanEditBox(font, inputLeft, top + shortTop, FIELD_WIDTH, ROW_HEIGHT,
 				Component.translatable("screen.sinanmap.waypoint.short_name"));
 		shortBox.setMaxLength(Waypoint.MAX_SHORT_NAME_LENGTH);
 		shortBox.setHint(Component.translatable("screen.sinanmap.waypoint.short_name_hint"));
@@ -250,7 +251,7 @@ public final class WaypointEditScreen extends Screen {
 
 		// 颜色那一行：预览方块（点它开关取色板）+ 手动输入色号的框。方块与输入框同高（PREVIEW_SIZE == ROW_HEIGHT），
 		// 所以两者都从 COLOR_TOP 起、上下沿齐平；方块占输入列的起点，色号框紧跟在它右边
-		colorBox = new EditBox(font, inputLeft + PREVIEW_SIZE + COLOR_GAP,
+		colorBox = new SinanEditBox(font, inputLeft + PREVIEW_SIZE + COLOR_GAP,
 				top + colorTop, COLOR_BOX_WIDTH, ROW_HEIGHT,
 				Component.translatable("screen.sinanmap.waypoint.color"));
 		colorBox.setMaxLength(7);
@@ -267,19 +268,16 @@ public final class WaypointEditScreen extends Screen {
 		buttonWidth = Math.clamp((width - 16 - gap * (count - 1)) / count, 50, buttonWidth);
 		int x = width / 2 - (buttonWidth * count + gap * (count - 1)) / 2;
 		int buttonY = top + buttonTop;
-		addRenderableWidget(Button.builder(Component.translatable("screen.sinanmap.waypoint.cancel"),
-						button -> onClose())
-				.bounds(x, buttonY, buttonWidth, ROW_HEIGHT).build());
+		addRenderableWidget(new SinanButton(x, buttonY, buttonWidth, ROW_HEIGHT,
+				Component.translatable("screen.sinanmap.waypoint.cancel"), this::onClose));
 		x += buttonWidth + gap;
 		if (editing != null) {
-			addRenderableWidget(Button.builder(Component.translatable("screen.sinanmap.waypoint.delete"),
-							button -> delete())
-					.bounds(x, buttonY, buttonWidth, ROW_HEIGHT).build());
+			addRenderableWidget(new SinanButton(x, buttonY, buttonWidth, ROW_HEIGHT,
+					Component.translatable("screen.sinanmap.waypoint.delete"), this::delete));
 			x += buttonWidth + gap;
 		}
-		saveButton = Button.builder(Component.translatable("screen.sinanmap.waypoint.save"),
-						button -> save())
-				.bounds(x, buttonY, buttonWidth, ROW_HEIGHT).build();
+		saveButton = new SinanButton(x, buttonY, buttonWidth, ROW_HEIGHT,
+				Component.translatable("screen.sinanmap.waypoint.save"), this::save);
 		addRenderableWidget(saveButton);
 
 		// 名字框先拿到焦点：中文输入法立刻就绪
@@ -346,7 +344,7 @@ public final class WaypointEditScreen extends Screen {
 	 * 这样"用自动值"与"手动改过"一眼分得开，也不必先删预填内容。三个框从左到右就是 X、Y、Z。
 	 */
 	private EditBox coordinateBox(int x, int y, int boxWidth, int value) {
-		EditBox box = new EditBox(font, x, y, boxWidth, ROW_HEIGHT, Component.literal(""));
+		EditBox box = new SinanEditBox(font, x, y, boxWidth, ROW_HEIGHT, Component.literal(""));
 		box.setMaxLength(9);
 		box.setHint(Component.literal(String.valueOf(value)));
 		addRenderableWidget(box);

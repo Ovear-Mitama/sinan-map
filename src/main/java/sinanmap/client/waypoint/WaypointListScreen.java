@@ -12,7 +12,6 @@ import java.util.function.Consumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
@@ -28,6 +27,9 @@ import com.mojang.blaze3d.platform.cursor.CursorTypes;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
+import sinanmap.client.gui.SinanButton;
+import sinanmap.client.gui.SinanEditBox;
+import sinanmap.client.gui.SinanStyle;
 import sinanmap.common.coord.WorldPos;
 import sinanmap.common.waypoint.Waypoint;
 import sinanmap.common.waypoint.WaypointStore;
@@ -164,7 +166,7 @@ public final class WaypointListScreen extends Screen {
 	private String promptTitle = "";
 	private Consumer<String> promptAction;
 	private EditBox promptBox;
-	private Button promptConfirm;
+	private SinanButton promptConfirm;
 
 	public WaypointListScreen(Screen parent) {
 		super(Component.translatable("screen.sinanmap.waypoint.manager"));
@@ -186,7 +188,7 @@ public final class WaypointListScreen extends Screen {
 		listLeft = dimensionLeft + dimensionWidth + DIMENSION_GAP;
 		listRight = listLeft + listWidth;
 
-		searchBox = new EditBox(font, listLeft, 40, listWidth, 20,
+		searchBox = new SinanEditBox(font, listLeft, 40, listWidth, 20,
 				Component.translatable("screen.sinanmap.waypoint.search"));
 		searchBox.setMaxLength(Waypoint.MAX_NAME_LENGTH);
 		searchBox.setHint(Component.translatable("screen.sinanmap.waypoint.search"));
@@ -216,9 +218,8 @@ public final class WaypointListScreen extends Screen {
 		int y = height - 28;
 		for (int i = 0; i < labels.length; i++) {
 			Runnable action = actions[i];
-			addRenderableWidget(Button.builder(Component.translatable(labels[i]),
-							button -> action.run())
-					.bounds(x, y, buttonWidth, 20).build());
+			addRenderableWidget(new SinanButton(x, y, buttonWidth, 20,
+					Component.translatable(labels[i]), action));
 			x += buttonWidth + BUTTON_GAP;
 		}
 
@@ -469,18 +470,16 @@ public final class WaypointListScreen extends Screen {
 		int boxWidth = 200;
 		int centerX = width / 2;
 		int boxY = height / 2 - 10;
-		promptBox = new EditBox(font, centerX - boxWidth / 2, boxY, boxWidth, 20,
+		promptBox = new SinanEditBox(font, centerX - boxWidth / 2, boxY, boxWidth, 20,
 				Component.literal(promptTitle));
 		promptBox.setMaxLength(Waypoint.MAX_GROUP_LENGTH);
 		promptBox.setValue(initial == null ? "" : initial);
 		addRenderableWidget(promptBox);
-		promptConfirm = Button.builder(Component.translatable("screen.sinanmap.waypoint.confirm"),
-						button -> confirmPrompt())
-				.bounds(centerX - boxWidth / 2, boxY + 24, (boxWidth - 4) / 2, 20).build();
+		promptConfirm = new SinanButton(centerX - boxWidth / 2, boxY + 24, (boxWidth - 4) / 2, 20,
+				Component.translatable("screen.sinanmap.waypoint.confirm"), this::confirmPrompt);
 		addRenderableWidget(promptConfirm);
-		addRenderableWidget(Button.builder(Component.translatable("screen.sinanmap.waypoint.cancel"),
-						button -> closePrompt())
-				.bounds(centerX + 4, boxY + 24, (boxWidth - 4) / 2, 20).build());
+		addRenderableWidget(new SinanButton(centerX + 4, boxY + 24, (boxWidth - 4) / 2, 20,
+				Component.translatable("screen.sinanmap.waypoint.cancel"), this::closePrompt));
 		setFocused(promptBox);
 	}
 

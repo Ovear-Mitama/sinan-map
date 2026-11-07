@@ -104,9 +104,8 @@ public final class MapSettingsScreen extends Screen {
 	/** 底部固定那条"返回 / 完成"的高度与间距；宽度取一列（见 {@link #addBottomBar()}）。 */
 	private static final int BOTTOM_BUTTON_HEIGHT = 18;
 
-	/** 切页时内容从右侧滑入的距离与时长。 */
-	private static final int PAGE_SLIDE_DISTANCE = 16;
-	private static final long PAGE_SLIDE_NANOS = 140_000_000L;
+	/** 切页只做淡入淡出（不横向滑动）的时长。 */
+	private static final long PAGE_FADE_NANOS = 140_000_000L;
 
 	/** 提示文字超过这个宽度就折行（GUI 像素）；底色比按钮更透。 */
 	private static final int TOOLTIP_MAX_WIDTH = 170;
@@ -182,7 +181,7 @@ public final class MapSettingsScreen extends Screen {
 	private long lastScrollNanos;
 
 	/** 切页动画的起始时刻（纳秒）；0 = 不在动画里。 */
-	private long pageSlideStartNanos;
+	private long pageFadeStartNanos;
 
 	private final int[] cursor = new int[2];
 
@@ -527,28 +526,54 @@ public final class MapSettingsScreen extends Screen {
 		return t * t * (3.0F - 2.0F * t);
 	}
 
-	/** 换页：重搭上一页控件，并让新内容从右侧滑进来。 */
+	/** 换页：重搭上一页控件，并让新内容淡入（只做淡入淡出，不做横向滑动）。 */
 	private void showPage(int target) {
-		pageSlideStartNanos = target == page ? 0L : System.nanoTime();
+		pageFadeStartNanos = target == page ? 0L : System.nanoTime();
 		page = target;
 		rebuild();
 	}
 
 	/**
-	 * 切页动画的横向偏移（像素）：三次缓出（起步快、收尾慢）。动画结束把起始时刻清 0，之后每帧返回 0。
+	 * 换页的淡入进度（0~1）：smoothstep（两头慢、中间快）。动画结束把起始时刻清 0，
+	 * 并把控件的淡入进度恢复成 1（色号框这类"按开关置灰"的控件要那一刻重算）。
 	 */
-	private int pageSlideOffset() {
-		if (pageSlideStartNanos == 0L) {
-			return 0;
+	private float pageFade() {
+		if (pageFadeStartNanos == 0L) {
+			return 1.0F;
 		}
-		long elapsed = System.nanoTime() - pageSlideStartNanos;
-		if (elapsed >= PAGE_SLIDE_NANOS) {
-			pageSlideStartNanos = 0L;
-			return 0;
+		long elapsed = System.nanoTime() - pageFadeStartNanos;
+		if (elapsed >= PAGE_FADE_NANOS) {
+			pageFadeStartNanos = 0L;
+			resetWidgetFades();
+			return 1.0F;
 		}
-		double t = elapsed / (double) PAGE_SLIDE_NANOS;
-		double eased = 1.0 - Math.pow(1.0 - t, 3.0);
-		return (int) Math.round(PAGE_SLIDE_DISTANCE * (1.0 - eased));
+		float t = elapsed / (float) PAGE_FADE_NANOS;
+		return t * t * (3.0F - 2.0F * t);
+	}
+
+	/** 见 {@link #pageFade()}：把所有控件的淡入进度恢复成 1，并让"置灰"状态重新算一遍。 */
+	private void resetWidgetFades() {
+		for (Entry entry : entries) {
+			for (AbstractWidget widget : entry.widgets()) {
+				setWidgetFade(widget, 1.0F);
+			}
+		}
+		for (AbstractWidget widget : fixedWidgets) {
+			setWidgetFade(widget, 1.0F);
+		}
+		if (searchBox != null) {
+			searchBox.setFade(1.0F);
+		}
+		refreshControlStates();
+	}
+
+	/** 给支持淡入的控件乘同一个进度（其余控件本来就没有 fade 概念）。 */
+	private static void setWidgetFade(AbstractWidget widget, float fade) {
+		if (widget instanceof SinanButton button) {
+			button.setFade(fade);
+		} else if (widget instanceof SinanSlider slider) {
+			slider.setFade(fade);
+		}
 	}
 
 	/** 首页：大项入口。与分项页<b>同一套排版</b>（同样两列、从中间断开），每行一颗整列宽按钮，最后一行是"重置设置"。 */
@@ -1301,22 +1326,56 @@ public final class MapSettingsScreen extends Screen {
 	}
 
 	/**
-	 * 把每个控件摆到"基准位置 + 滚动偏移 + 切页动画偏移"，每帧从基准值重算（累加会随帧率飘）。
+	 * 把每个控件摆到"基准位置 + 滚动偏移"，每帧从基准值重算（累加会随帧率飘）；
+	 * 同时套上设置页统一样式（按钮透明底）与换页淡入进度。
 	 *
 	 * <p>摆的同时定"这一行露不露"：只有<b>整行都在列表范围内</b>的才画，否则滚出去的行会盖住标题条与底部按钮。
 	 */
 	private void applyTransforms() {
 		int offset = (int) Math.round(scroll);
-		int slide = pageSlideOffset();
+		float fade = pageFade();
 		for (Entry entry : entries) {
 			int y = entry.baseY() - offset;
 			boolean inView = y >= listTop && y + ROW_HEIGHT <= listBottom;
 			for (int index = 0; index < entry.widgets().size(); index++) {
 				AbstractWidget widget = entry.widgets().get(index);
-				widget.setX(entry.baseXs().get(index) + slide);
+				widget.setX(entry.baseXs().get(index));
 				widget.setY(y);
 				widget.visible = inView;
+				styleWidget(widget, fade);
 			}
+		}
+		// 底部固定按钮（返回 / 完成 / 取消）不在 entries 里：只套透明底，<b>不跟着切页淡入</b>
+		for (AbstractWidget widget : fixedWidgets) {
+			if (widget instanceof SinanButton button) {
+				button.setTransparentBackground(true);
+			}
+		}
+		// 色号输入框不是 AbstractWidget（独立的 SinanTextField），单独跟着页淡入；
+		// 它本来就带"开关关掉时 0.4"的置灰，这里乘在一起
+		if (fade < 1.0F) {
+			if (gridColorBox != null) {
+				gridColorBox.setFade(fade * (settings.chunkGrid() ? 1.0F : 0.4F));
+			}
+			if (compassColorBox != null) {
+				compassColorBox.setFade(fade * (settings.compass() ? 1.0F : 0.4F));
+			}
+			if (compassBackgroundColorBox != null) {
+				compassBackgroundColorBox.setFade(fade * (settings.compass() ? 1.0F : 0.4F));
+			}
+		}
+	}
+
+	/**
+	 * 设置页统一样式：按钮<b>常态透明底</b>（背后已经模糊过，就是毛玻璃），
+	 * 换页时整页控件一起淡入（确认框那两颗按钮有自己的进度，不在这里乘）。
+	 */
+	private void styleWidget(AbstractWidget widget, float fade) {
+		if (widget instanceof SinanButton button) {
+			button.setTransparentBackground(true);
+		}
+		if (fade < 1.0F && !confirmButtons.contains(widget)) {
+			setWidgetFade(widget, fade);
 		}
 	}
 
@@ -1338,6 +1397,20 @@ public final class MapSettingsScreen extends Screen {
 		scroll += (scrollTarget - scroll) * factor;
 	}
 
+	/**
+	 * <b>不画原版背景</b>：游戏内的菜单底纹、压暗、<b>提前模糊</b>一概不做。
+	 *
+	 * <p>原版 {@link Screen#extractBackground} 会在 {@code extractRenderState} <b>之前</b>先调一次
+	 * {@code blurBeforeThisStratum}（基类 {@code isInGameUi()} 默认 false，选项≥1 时就会走这条），
+	 * 于是整个背景都被糊掉——而我们要的是"背景清晰、只有按钮半透明磨砂"，所以直接覆写成空操作。
+	 * 背景仍由父界面自己画（世界地图 / 世界画面）。
+	 */
+	@Override
+	public void extractBackground(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+		// 只保留原版字幕（如果有）；底纹、压暗与模糊都不要
+		Minecraft.getInstance().gui.extractDeferredSubtitles();
+	}
+
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		if (parent instanceof WorldMapScreen map) {
@@ -1346,6 +1419,10 @@ public final class MapSettingsScreen extends Screen {
 		}
 		// 两种情况都<b>不压暗背景</b>：设置面板只占中间两列，压暗整屏等于把周围的地图 / 游戏画面
 		// 一起糊掉了，直接叠上去反而更清楚
+		//
+		// <b>不做背景模糊</b>：MC 26.1 的模糊是整帧一次性 post-process（一次只能排一个边界），
+		// 没法只糊按钮下面那一块。所以背景保持清晰，磨砂感由按钮底色负责
+		// （见 {@code SinanButton#transparentBackground}）。
 
 		drawHeader(graphics);
 		scrollTarget = clampScroll(scrollTarget);
@@ -1378,8 +1455,10 @@ public final class MapSettingsScreen extends Screen {
 			int trackHeight = listBottom - listTop;
 			int barHeight = Math.max(14, Math.round(trackHeight * trackHeight / (float) contentHeight));
 			int barY = listTop + Math.round((trackHeight - barHeight) * (float) (scroll / maxScroll));
-			graphics.fill(width - 6, listTop, width - 4, listBottom, 0x20FFFFFF);
-			graphics.fill(width - 6, barY, width - 4, barY + barHeight, 0x80FFFFFF);
+			// 滚动条贴着<b>面板右边缘</b>（原来画在屏幕最右侧，离内容太远）
+			int barLeft = panelX + panelWidth + 3;
+			graphics.fill(barLeft, listTop, barLeft + 2, listBottom, 0x20FFFFFF);
+			graphics.fill(barLeft, barY, barLeft + 2, barY + barHeight, 0x80FFFFFF);
 		}
 		drawTooltip(graphics, mouseX, mouseY);
 		updateCursor(graphics, mouseX, mouseY);
@@ -1485,6 +1564,7 @@ public final class MapSettingsScreen extends Screen {
 	 * 看上去是嵌在条里的一段。
 	 */
 	private void drawHeader(GuiGraphicsExtractor graphics) {
+		// 标题条<b>不参与切页淡入</b>：换页时它一直在，只有下面的内容行淡入
 		Component header = page == PAGE_HOME ? title : pageName(page);
 		graphics.fill(panelX, TITLE_Y, panelX + panelWidth, TITLE_Y + HEADER_HEIGHT, SinanStyle.BACKGROUND);
 		Matrix3x2fStack pose = graphics.pose();
@@ -1494,8 +1574,9 @@ public final class MapSettingsScreen extends Screen {
 		graphics.text(font, header, 0, 0, 0xFFFFFFFF, true);
 		pose.popMatrix();
 
-		// 全局搜索框画在标题条最右端
+		// 全局搜索框画在标题条最右端（同样不参与切页淡入）
 		ensureSearchBox();
+		searchBox.setFade(1.0F);
 		searchBox.render(graphics);
 	}
 

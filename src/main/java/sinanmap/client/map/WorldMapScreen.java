@@ -1,6 +1,5 @@
 package sinanmap.client.map;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -11,7 +10,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Stream;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
@@ -262,20 +260,19 @@ public final class WorldMapScreen extends Screen {
 	private static final int BAR_CAP_WIDTH = 4;
 	private static final int BAR_HEIGHT = 6;
 
-	/** 按钮：判定框就是画出来的图标（边长 {@value #BUTTON_SIZE}），间距 3、离屏幕边 8。 */
-	private static final int BUTTON_SIZE = 14;
-	private static final int BUTTON_GAP = 3;
-	private static final int BUTTON_MARGIN = 8;
+	/** 按钮：判定框就是画出来的图标（边长 {@value #BUTTON_SIZE}），间距 2、离屏幕边 6。 */
+	private static final int BUTTON_SIZE = 12;
+	private static final int BUTTON_GAP = 2;
+	private static final int BUTTON_MARGIN = 6;
 
 	private static final int BUTTON_SETTINGS = 0;
 	private static final int BUTTON_WAYPOINTS = 1;
 	private static final int BUTTON_DIMENSION = 2;
 	private static final int BUTTON_LAYER = 3;
-	private static final int BUTTON_PERF = 4;
-	private static final int BUTTON_LOCATE = 5;
-	private static final int BUTTON_ZOOM_IN = 6;
-	private static final int BUTTON_ZOOM_OUT = 7;
-	private static final int BUTTON_COUNT = 8;
+	private static final int BUTTON_LOCATE = 4;
+	private static final int BUTTON_ZOOM_IN = 5;
+	private static final int BUTTON_ZOOM_OUT = 6;
+	private static final int BUTTON_COUNT = 7;
 
 	/**
 	 * 右下那一列里，按钮从下往上属第几行（0 是最底下）。
@@ -292,9 +289,9 @@ public final class WorldMapScreen extends Screen {
 		};
 	}
 
-	/** 在左上角那一列的按钮（设置 / 路径点 / 维度 / 层级 / 性能）。 */
+	/** 在左上角那一列的按钮（设置 / 路径点 / 维度 / 层级）。 */
 	private static boolean isTopLeft(int button) {
-		return button <= BUTTON_PERF;
+		return button <= BUTTON_LAYER;
 	}
 
 	/**
@@ -308,7 +305,7 @@ public final class WorldMapScreen extends Screen {
 	private static final int ICON_COLOR_PRESSED = 0xFF6E6E6E;
 
 	/** 比例尺想占多长（GUI 像素），以及允许取用的"整距离"档位（单位：格=米）。 */
-	private static final double BAR_TARGET_WIDTH = 84.0;
+	private static final double BAR_TARGET_WIDTH = 72.0;
 	private static final double[] BAR_STEPS = {
 			1, 2, 5, 10, 20, 50, 100, 200, 500,
 			1000, 2000, 5000, 10000, 20000, 50000,
@@ -374,11 +371,11 @@ public final class WorldMapScreen extends Screen {
 	// ------------------------------------------------------------ 路径点面板（任务：世界地图上的路径点面板）
 
 	/** 面板宽度、内边距、行高、搜索框高度（GUI 像素）。 */
-	private static final int PANEL_WIDTH = 104;
-	private static final int PANEL_PADDING = 3;
+	private static final int PANEL_WIDTH = 92;
+	private static final int PANEL_PADDING = 2;
 	private static final int PANEL_TITLE_HEIGHT = 9;
 	private static final int PANEL_ROW_HEIGHT = 11;
-	private static final int PANEL_SEARCH_HEIGHT = 13;
+	private static final int PANEL_SEARCH_HEIGHT = 12;
 
 	/** 列表最多显示这么多行，再多就滚动。 */
 	private static final int PANEL_MAX_ROWS = 10;
@@ -392,10 +389,10 @@ public final class WorldMapScreen extends Screen {
 	 * 层级浮层：上面一条<b>自绘滑条</b>（与设置界面 {@link SinanStyle#drawSlider} 同一份画法），
 	 * 下面一个手输 Y 的输入框（宽度与右下角那个 x/y 跳转框一致，看着才是一套）。
 	 */
-	private static final int LAYER_SLIDER_WIDTH = 84;
+	private static final int LAYER_SLIDER_WIDTH = 76;
 	private static final int LAYER_SLIDER_HEIGHT = 14;
 	private static final int LAYER_INPUT_GAP = 1;
-	private static final int LAYER_INPUT_WIDTH = 84;
+	private static final int LAYER_INPUT_WIDTH = 76;
 	private static final int LAYER_INPUT_HEIGHT = 14;
 	private static final int LAYER_POPUP_WIDTH = LAYER_SLIDER_WIDTH;
 	private static final int LAYER_POPUP_HEIGHT =
@@ -469,32 +466,6 @@ public final class WorldMapScreen extends Screen {
 	private long layerOpenedNanos;
 
 	/**
-	 * 性能面板是否展开（见 {@link #drawPerfPanel}）。
-	 *
-	 * <p>面板关着时那些统计<b>一次都不算</b>：要列"多少页、占多少显存、待补多少"就得遍历缓存，
-	 * 做成后台每秒跑一次等于"为了看性能而变卡"（用户明确要求）。
-	 */
-	private boolean perfOpen;
-
-	/** 地图数据目录占用的缓存（字节）与上次扫盘的时刻：扫盘是 IO，几秒内不重扫。 */
-	private long perfStorageBytes = -1;
-	private long perfStorageNanos;
-	private static final long PERF_STORAGE_CACHE_NANOS = 5_000_000_000L;
-
-	/**
-	 * 性能面板的宽度、行高、行数（行数固定，点击判定与绘制共用同一块矩形）。
-	 *
-	 * <p>刻意做小：它只是"想看一眼"的浮层，压在左上角、贴着性能按钮，不该占掉一大片地图。
-	 * 宽度按最长那行文字定（{@code 视野 12 页 · 待 3 · 5/8} 这一档），再往下就会换行。
-	 */
-	private static final int PERF_PANEL_WIDTH = 116;
-	private static final int PERF_ROW_HEIGHT = 9;
-	private static final int PERF_PANEL_ROWS = 5;
-
-	/** 性能面板内部的上下边距（左内边距在绘制处写死为 3）。 */
-	private static final int PERF_PAD_Y = 2;
-
-	/**
 	 * 浮层展开的淡入进度（0~1，平滑收尾）。
 	 *
 	 * <p>掉用方把它乘到<b>每一处颜色</b>上（文字、高亮、滑条、输入框），整块因此是"渐渐显出来"的，
@@ -514,7 +485,7 @@ public final class WorldMapScreen extends Screen {
 	// ------------------------------------------------------------ 刻度尺上的坐标跳转（任务：刻度尺上的"跳转"）
 
 	/** 跳转按钮 / 输入框的尺寸与离底部那条尺子的间距。 */
-	private static final int JUMP_WIDTH = 84;
+	private static final int JUMP_WIDTH = 76;
 	private static final int JUMP_HEIGHT = 14;
 	private static final int JUMP_BOTTOM_GAP = 4;
 
@@ -902,12 +873,6 @@ public final class WorldMapScreen extends Screen {
 		drawNanosMax = Math.max(drawNanosMax, draw);
 		frameNanosMax = Math.max(frameNanosMax, total);
 		framesThisSecond++;
-		// 面板用的滑动平均（跨过每秒清零点，见 perfFrameMillisEma 的说明）
-		double frameMillis = total / 1.0e6;
-		perfFrameMillisEma = perfFrameEmaInitialized
-				? perfFrameMillisEma * 0.9 + frameMillis * 0.1
-				: frameMillis;
-		perfFrameEmaInitialized = true;
 		if (total >= SLOW_FRAME_MILLIS * 1_000_000L) {
 			LOGGER.info("世界地图慢帧 | 本帧 {} ms（填充 {} / 作废补画 {} / 绘制 {}）| 页={} 问={} 画={} 待补={} 传={}",
 					ms(total), ms(fill), ms(refresh), ms(draw),
@@ -2727,15 +2692,6 @@ public final class WorldMapScreen extends Screen {
 	private long frameNanosMax;
 	private int framesThisSecond;
 
-	/**
-	 * 性能面板用的<b>指数滑动平均</b>毫秒/帧。不做成"每秒清零再统计"：
-	 * 那套计数是给每秒一条的诊断日志用的，面板每帧都读它的话，每秒起始那几帧会看到
-	 * "0 FPS"然后慢慢涨——就是用户看到的"帧率一会就从 0 开始算"。滑动平均跨过清零点，
-	 * 面板上永远是平滑稳定的值。
-	 */
-	private double perfFrameMillisEma;
-	private boolean perfFrameEmaInitialized;
-
 	private void logComposition() {
 		long now = System.nanoTime();
 		if (now - lastCompositionLogNanos < COMPOSITION_LOG_NANOS) {
@@ -3555,19 +3511,13 @@ public final class WorldMapScreen extends Screen {
 		// 维度 / 层级浮层压在路径点面板之上（同一块地方，同时只会开一个）
 		drawDimensionPopup(graphics, mouseX, mouseY);
 		drawLayerPopup(graphics, mouseX, mouseY);
-		drawPerfPanel(graphics);
 		drawJumpInput(graphics, mouseX, mouseY);
 		drawScaleBar(graphics);
 		// 提示画在最上面：它可能压到刚展开的面板上，压在下面就会被挡掉
 		drawButtonTooltip(graphics, mouseX, mouseY);
 	}
 
-	/**
-	 * 按钮的提示语言键；返回 null 表示这一颗按钮<b>不显示悬停提示</b>。
-	 *
-	 * <p>性能按钮的提示刻意做成极简的"性能"两字（见语言文件 {@code tip.perf}）：它本身就是
-	 * "看一眼占用"的入口，长句说明反而把左上角这一片弄乱（用户要求）。
-	 */
+	/** 按钮的提示语言键；返回 null 表示这一颗按钮<b>不显示悬停提示</b>。 */
 	private static @Nullable String buttonTipKey(int button) {
 		return switch (button) {
 			case BUTTON_SETTINGS -> "screen.sinanmap.world_map.tip.settings";
@@ -3576,7 +3526,6 @@ public final class WorldMapScreen extends Screen {
 			case BUTTON_LAYER -> "screen.sinanmap.world_map.tip.layer";
 			case BUTTON_LOCATE -> "screen.sinanmap.world_map.tip.locate";
 			case BUTTON_ZOOM_IN -> "screen.sinanmap.world_map.tip.zoom_in";
-			case BUTTON_PERF -> "screen.sinanmap.world_map.tip.perf";
 			default -> "screen.sinanmap.world_map.tip.zoom_out";
 		};
 	}
@@ -3632,7 +3581,6 @@ public final class WorldMapScreen extends Screen {
 		switch (button) {
 			case BUTTON_DIMENSION -> drawPortalIcon(graphics, buttonX(button), buttonY(button), color);
 			case BUTTON_LAYER -> drawLayersIcon(graphics, buttonX(button), buttonY(button), color);
-			case BUTTON_PERF -> drawPerfIcon(graphics, buttonX(button), buttonY(button), color);
 			default -> drawIcon(graphics, buttonIcon(button),
 					buttonX(button) + iconShiftX(button), buttonY(button), color);
 		}
@@ -3656,9 +3604,9 @@ public final class WorldMapScreen extends Screen {
 	 */
 	private static final int ICON_BODY = BUTTON_SIZE * 16 / ICON_REGION;
 
-	/** 维度图标（地狱门）本体的尺寸：比 {@link #ICON_BODY} 小一圈，内部保持 2:3。 */
-	private static final int PORTAL_WIDTH = 10;
-	private static final int PORTAL_HEIGHT = 12;
+	/** 维度图标（地狱门）本体的尺寸：比 {@link #ICON_BODY}（当前 11）小一圈，内部保持 2:3。 */
+	private static final int PORTAL_WIDTH = 8;
+	private static final int PORTAL_HEIGHT = 10;
 	private static final int PORTAL_THICKNESS = 2;
 
 	/**
@@ -3674,9 +3622,9 @@ public final class WorldMapScreen extends Screen {
 	 * 连成一片会看成一块斜的实心梯形。
 	 */
 	private static final int LAYER_ICON_COUNT = 3;
-	private static final int LAYER_ICON_WIDTH = 11;
+	private static final int LAYER_ICON_WIDTH = 9;
 	private static final int LAYER_ICON_DEPTH = 3;
-	private static final int LAYER_ICON_STEP = 4;
+	private static final int LAYER_ICON_STEP = 3;
 
 	/**
 	 * 维度按钮：画一个"地狱门"——只画门框、中间留空，内部与标准地狱门一致是 <b>2:3</b>。
@@ -3734,22 +3682,6 @@ public final class WorldMapScreen extends Screen {
 		for (int row = 0; row < LAYER_ICON_DEPTH; row++) {
 			graphics.fill(topLeftX - row, topLeftY + row,
 					topLeftX - row + LAYER_ICON_WIDTH, topLeftY + row + 1, color);
-		}
-	}
-
-	/** 性能按钮：三根高低不同的竖条（"数据"的样子），占地与其它图标一致，同样带一层右下投影。 */
-	private void drawPerfIcon(GuiGraphicsExtractor graphics, int x, int y, int color) {
-		int[] heights = {4, 8, 11};
-		drawPerfBars(graphics, x + 1, y + 1, heights, ICON_SHADOW);
-		drawPerfBars(graphics, x, y, heights, color);
-	}
-
-	/** 三根竖条本体：底边贴齐图标本体下沿，高度各不相同。 */
-	private static void drawPerfBars(GuiGraphicsExtractor graphics, int x, int y, int[] heights, int color) {
-		int base = y + ICON_BODY - 1;
-		for (int i = 0; i < heights.length; i++) {
-			int left = x + 1 + i * 5;
-			graphics.fill(left, base - heights[i] + 1, left + 2, base + 1, color);
 		}
 	}
 
@@ -3887,8 +3819,6 @@ public final class WorldMapScreen extends Screen {
 			// 维度 / 层级：各自在自己下面展开一个小浮层
 			case BUTTON_DIMENSION -> toggleDimensionPopup();
 			case BUTTON_LAYER -> toggleLayerPopup();
-			// 性能：展开一块"司南自己占了多少"的小面板（只有开着时才算，见 drawPerfPanel）
-			case BUTTON_PERF -> togglePerfPanel();
 			// 设置：切到设置界面（关掉时回到这张地图）
 			case BUTTON_SETTINGS -> Minecraft.getInstance().setScreen(new MapSettingsScreen(this, minimap, settings));
 		}
@@ -4268,7 +4198,6 @@ public final class WorldMapScreen extends Screen {
 	private void toggleDimensionPopup() {
 		dimensionOpen = !dimensionOpen;
 		layerOpen = false;
-		perfOpen = false;
 		layerDragging = false;
 		// 三个浮层都从按钮列右边这块地方展开，同时开着只会互相压住
 		closePanel();
@@ -4285,7 +4214,6 @@ public final class WorldMapScreen extends Screen {
 
 	private void toggleLayerPopup() {
 		layerOpen = !layerOpen;
-		perfOpen = false;
 		// 收掉维度浮层（它那份搜索框也一起撤掉），但别用 closePopups——那会把刚打开的自己也关掉
 		dimensionOpen = false;
 		dimensionSearchBox = null;
@@ -4336,108 +4264,6 @@ public final class WorldMapScreen extends Screen {
 		dimensionSearchBox = null;
 		dimensionQuery = "";
 		layerBox = null;
-		perfOpen = false;
-	}
-
-	/**
-	 * 开关性能面板。开的时候把别的浮层收掉：它们都在左上角这片地方展开，叠着只会互相压住。
-	 */
-	private void togglePerfPanel() {
-		boolean open = !perfOpen;
-		// closePopups 顺手会把 perfOpen 也关掉，所以先把结论存下来、最后再写回去
-		closePopups();
-		closePanel();
-		perfOpen = open;
-	}
-
-	/** 性能面板的顶边：<b>贴在性能按钮正下方</b>（左上角那一列的最后一个按钮）。 */
-	private int perfPanelTop() {
-		return buttonY(BUTTON_PERF) + BUTTON_SIZE + BUTTON_GAP;
-	}
-
-	/** 性能面板的高度（行数固定，见 {@link #PERF_PANEL_ROWS}）。 */
-	private int perfPanelHeight() {
-		return PERF_PANEL_ROWS * PERF_ROW_HEIGHT + PERF_PAD_Y * 2;
-	}
-
-	/** 光标是不是落在性能面板上（点在它上面时那一下不该穿透到底下的地图）。 */
-	private boolean perfContains(double mouseX, double mouseY) {
-		int left = buttonX(BUTTON_PERF);
-		return perfOpen && mouseX >= left && mouseX < left + PERF_PANEL_WIDTH
-				&& mouseY >= perfPanelTop() && mouseY < perfPanelTop() + perfPanelHeight();
-	}
-
-	/**
-	 * 性能面板：司南自己的占用情况（存储 / 每帧耗时 / 贴图 / 加载 / 线程）。
-	 *
-	 * <p><b>只有点开才算</b>：面板关着时这个方法第一行就返回——连"多少页、占多少显存"都不问。
-	 * 这些统计要遍历缓存，做成后台每秒跑一次就等于"为了看性能反而变卡"（用户明确要求）。
-	 * 唯一有 IO 的是"数据目录占用"，所以它带 5 秒缓存，不会每帧扫盘。
-	 */
-	private void drawPerfPanel(GuiGraphicsExtractor graphics) {
-		if (!perfOpen) {
-			return;
-		}
-		double perFrameMillis = perfFrameMillisEma;
-		String[] lines = {
-				text("perf.storage", megabytes(mapStorageBytes())),
-				text("perf.cpu", "%.2f".formatted(perFrameMillis)),
-				text("perf.gpu", tiles.residentPageCount(), megabytes(tiles.estimatedTextureBytes())),
-				text("perf.loading", viewPageCount(), pendingOfView(),
-						tiles.frameAsks(), tiles.framePaints()),
-				text("perf.threads", settings.effectivePrefetchThreads(),
-						settings.effectiveCaveScanThreads()),
-		};
-		int x = buttonX(BUTTON_PERF);
-		int y = perfPanelTop();
-		int height = perfPanelHeight();
-		graphics.fill(x, y, x + PERF_PANEL_WIDTH, y + height, 0xD0101014);
-		SinanStyle.outline(graphics, x, y, PERF_PANEL_WIDTH, height, SinanStyle.BORDER_IDLE);
-		for (int i = 0; i < lines.length; i++) {
-			graphics.text(font, lines[i], x + 3, y + PERF_PAD_Y + i * PERF_ROW_HEIGHT, 0xFFE6E6E6, false);
-		}
-	}
-
-	private static String text(String key, Object... args) {
-		return Component.translatable("screen.sinanmap.world_map." + key, args).getString();
-	}
-
-	/** 字节 → "12.4 MB"；拿不到（负数）时写一个问号，别显示成 -1 MB。 */
-	private static String megabytes(long bytes) {
-		return bytes < 0 ? "?" : "%.1f MB".formatted(bytes / (1024.0 * 1024.0));
-	}
-
-	/**
-	 * 地图数据目录占了多少字节。
-	 *
-	 * <p>要递归扫盘，是这里唯一的 IO，所以带 5 秒缓存：面板开着时每 5 秒重算一次，
-	 * 关掉面板就再也不问（见 {@link #drawPerfPanel}）。
-	 */
-	private long mapStorageBytes() {
-		long now = System.nanoTime();
-		if (perfStorageBytes >= 0 && now - perfStorageNanos < PERF_STORAGE_CACHE_NANOS) {
-			return perfStorageBytes;
-		}
-		perfStorageNanos = now;
-		perfStorageBytes = scanDirectoryBytes(MapStorage.currentRoot(Minecraft.getInstance()));
-		return perfStorageBytes;
-	}
-
-	private static long scanDirectoryBytes(Path root) {
-		if (root == null || !Files.isDirectory(root)) {
-			return 0L;
-		}
-		long total = 0L;
-		try (Stream<Path> walk = Files.walk(root)) {
-			for (Path path : walk.toList()) {
-				if (Files.isRegularFile(path)) {
-					total += Files.size(path);
-				}
-			}
-		} catch (IOException e) {
-			return -1L;
-		}
-		return total;
 	}
 
 	/**
@@ -4697,8 +4523,7 @@ public final class WorldMapScreen extends Screen {
 		if (!jumpOpen && jumpHit(mouseX, mouseY)) {
 			return true;
 		}
-		return panelContains(mouseX, mouseY) || anyPopupContains(mouseX, mouseY)
-				|| perfContains(mouseX, mouseY);
+		return panelContains(mouseX, mouseY) || anyPopupContains(mouseX, mouseY);
 	}
 
 	/** 列表最多能滚多少像素（内容不足一屏时是 0，滚动条也就不画）。 */

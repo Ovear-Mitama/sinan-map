@@ -22,6 +22,17 @@ public class SinanButton extends AbstractButton {
 	/** 整块淡入进度（0~1，默认 1），见 {@link SinanStyle#fade(int, float)}。 */
 	private float fade = 1.0F;
 
+	/**
+	 * 常态是否用<b>更透的"磨砂"底</b>（而不是普通按钮底色）。
+	 *
+	 * <p>给设置页用：背景保持清晰（MC 的模糊只能整帧一次、没法只糊按钮），按钮用<b>半透明深色磨砂底</b>
+	 * 让背后内容透出来；悬停再铺一层更亮的淡色，保证"点到哪儿"看得见。
+	 */
+	private boolean transparentBackground;
+
+	/** 见 {@link #transparentBackground}：比 {@link SinanStyle#BACKGROUND} 更透的磨砂底。 */
+	private static final int FROSTED_BACKGROUND = 0x70101014;
+
 	public SinanButton(int x, int y, int width, int height, Component message, Runnable action) {
 		super(x, y, width, height, message);
 		this.action = action;
@@ -35,6 +46,11 @@ public class SinanButton extends AbstractButton {
 	 */
 	public void setFade(float fade) {
 		this.fade = Math.clamp(fade, 0.0F, 1.0F);
+	}
+
+	/** 见 {@link #transparentBackground}：true = 常态不铺底色（悬停仍有淡色）。 */
+	public void setTransparentBackground(boolean transparentBackground) {
+		this.transparentBackground = transparentBackground;
 	}
 
 	@Override
@@ -51,15 +67,17 @@ public class SinanButton extends AbstractButton {
 		boolean active = isActive();
 		boolean hover = active && isHoveredOrFocused();
 
-		graphics.fill(x, y, x + w, y + h,
-				SinanStyle.fade(hover ? SinanStyle.BACKGROUND_ACTIVE : SinanStyle.BACKGROUND, fade));
+		int background = hover ? SinanStyle.BACKGROUND_ACTIVE
+				: (transparentBackground ? FROSTED_BACKGROUND : SinanStyle.BACKGROUND);
+		graphics.fill(x, y, x + w, y + h, SinanStyle.fade(background, fade));
 		// 边框：常态就描一圈暗的，悬停变亮、聚焦最亮
 		if (isFocused()) {
 			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_FOCUS, fade));
 		} else if (hover) {
 			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_HOVER, fade));
 		} else {
-			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_IDLE, fade));
+			SinanStyle.outline(graphics, x, y, w, h,
+					SinanStyle.fade(SinanStyle.BORDER_BUTTON_IDLE, fade));
 		}
 
 		Font font = Minecraft.getInstance().font;

@@ -14,8 +14,16 @@ import net.minecraft.network.chat.Component;
  */
 public abstract class SinanSlider extends AbstractSliderButton {
 
+	/** 整块淡入进度（0~1，默认 1）：给"换页 / 浮层整块淡入"用。 */
+	private float fade = 1.0F;
+
 	protected SinanSlider(int x, int y, int width, int height, Component message, double value) {
 		super(x, y, width, height, message, value);
+	}
+
+	/** 见 {@link #fade}：与同页的按钮、输入框乘同一个进度，整块一起显出来。 */
+	public void setFade(float fade) {
+		this.fade = Math.clamp(fade, 0.0F, 1.0F);
 	}
 
 	@Override
@@ -27,14 +35,15 @@ public abstract class SinanSlider extends AbstractSliderButton {
 		boolean active = isActive();
 		boolean hover = active && isHoveredOrFocused();
 
-		SinanStyle.drawSlider(graphics, x, y, w, h, value, active, hover);
+		SinanStyle.drawSlider(graphics, x, y, w, h, value, active, hover, fade);
 		if (isFocused()) {
 			// 聚焦时再套一圈亮边框，与按钮一致
-			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.BORDER_FOCUS);
+			SinanStyle.outline(graphics, x, y, w, h, SinanStyle.fade(SinanStyle.BORDER_FOCUS, fade));
 		}
 
 		Font font = Minecraft.getInstance().font;
 		int textColor = active ? SinanStyle.TEXT : SinanStyle.TEXT_INACTIVE;
-		graphics.centeredText(font, getMessage(), x + w / 2, y + (h - font.lineHeight + 1) / 2, textColor);
+		graphics.centeredText(font, getMessage(), x + w / 2, y + (h - font.lineHeight + 1) / 2,
+				SinanStyle.fade(textColor, fade));
 	}
 }
