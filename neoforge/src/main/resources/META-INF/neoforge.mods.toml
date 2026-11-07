@@ -8,7 +8,9 @@ version = "${version}"
 displayName = "Sinan Map"
 description = '''司南地图：客户端小地图、全屏地图与路径点系统。'''
 logoFile = "assets/sinanmap/icon.png"
-authors = "Sinan Map Contributors"
+authors = "mitama"
+displayURL = "https://github.com/Ovear-Mitama/sinan-map"
+issueTrackerURL = "https://github.com/Ovear-Mitama/sinan-map/issues/"
 
 [[dependencies.sinanmap]]
 modId = "neoforge"

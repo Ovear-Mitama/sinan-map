@@ -5,9 +5,13 @@
 	"name": "Sinan Map",
 	"description": "司南地图：客户端小地图、全屏地图与路径点系统。",
 	"authors": [
-		"Sinan Map Contributors"
+		"mitama"
 	],
 	"license": "All-Rights-Reserved",
+	"contact": {
+		"sources": "https://github.com/Ovear-Mitama/sinan-map",
+		"issues": "https://github.com/Ovear-Mitama/sinan-map/issues/"
+	},
 	"icon": "assets/sinanmap/icon.png",
 	"environment": "*",
 	"entrypoints": {
