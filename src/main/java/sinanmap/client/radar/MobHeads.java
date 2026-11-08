@@ -681,8 +681,11 @@ final class MobHeads {
 	 *         （调用方把该变种判成"这条路做不出来"，交给退化链画刷怪蛋/菱形）
 	 */
 	static Head adopt(EntityType<?> type, MobHeadKey key, NativeImage image) {
-		// 先摘掉"与主体不相连的碎块"，再导出（这样导出图看到的就是最终结果，便于验收）
+		// 先清掉"离实体主体没有直接相邻的弱像素"（见 clearWeakPixels），再摘碎块，最后导出
+		clearWeakPixels(image);
 		dropDetachedSlivers(image);
+		pruneLeaves(image);
+		hardenWeakAlpha(image);
 		if (DUMP_ENABLED) {
 			dump(type, key, image);
 		}
@@ -693,6 +696,164 @@ final class MobHeads {
 			return null;
 		}
 		return register(type, key, image);
+	}
+
+	/**
+	 * 清掉"弱像素"：<b>alpha 低于 {@value #WEAK_ALPHA}、且八邻域里没有任何实心像素</b>的一律变透明。
+	 *
+	 * <p><b>为什么</b>：离屏渲染里偶尔会出现<b>规则的半透明小点/斜纹</b>（alpha 约 60~195，
+	 * 猫、僵尸、蝙蝠、鹦鹉螺的头像导图里都能看到），不贴着实体主体的那些会和"真内容"一样留在图标里，
+	 * 缩小到 7 像素就成了"杂色"。它们没有一个是紧挨实心像素的，所以"必须贴着实心像素才保留"能干净地去掉，
+	 * 又不会削掉真正的抗锯齿边缘（那些一定挨着实心像素）。
+	 *
+	 * <p><b>整体半透明的模型不动</b>：实心像素太少（< 总像素的 1/8，例如史莱姆/岩浆怪/幻翼）时直接跳过，
+	 * 否则会把整只都清空。
+	 */
+	private static void clearWeakPixels(NativeImage icon) {
+		int width = icon.getWidth();
+		int height = icon.getHeight();
+		boolean[] solid = new boolean[width * height];
+		int solidCount = 0;
+		int[] pixels = new int[width * height];
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				int index = y * width + x;
+				pixels[index] = icon.getPixel(x, y);
+				if ((pixels[index] >>> 24) >= WEAK_ALPHA) {
+					solid[index] = true;
+					solidCount++;
+				}
+			}
+		}
+		if (solidCount * 8 < width * height) {
+			return;
+		}
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				int index = y * width + x;
+				int alpha = pixels[index] >>> 24;
+				if (alpha == 0 || alpha >= WEAK_ALPHA) {
+					continue;
+				}
+				if (!touchesSolid(solid, width, height, x, y)) {
+					icon.setPixel(x, y, 0);
+				}
+			}
+		}
+	}
+
+	/** 见 {@link #clearWeakPixels}：八邻域里有没有实心像素。 */
+	private static boolean touchesSolid(boolean[] solid, int width, int height, int x, int y) {
+		for (int dy = -1; dy <= 1; dy++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				int nx = x + dx;
+				int ny = y + dy;
+				if ((dx != 0 || dy != 0) && nx >= 0 && ny >= 0 && nx < width && ny < height
+						&& solid[ny * width + nx]) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** 见 {@link #clearWeakPixels}：alpha 到这个值算"实心"（成品图标里的真内容基本都是 255）。 */
+	private static final int WEAK_ALPHA = 200;
+
+	/**
+	 * 摘"叶子"：反复清掉<b>只有一个实心邻居</b>的像素（孤立凸点、单像素宽的尖端）。
+	 *
+	 * <p><b>为什么还要这一步</b>：杂色点里有正好贴着主体上沿的（四邻接），会被并进主体、
+	 * 前两步都清不掉；它们与主体的连接只有一条边，形状上就是"叶子"。斜向的锯齿/台阶像素有两个
+	 * 以上邻居（含对角），不会被误删，所以轮廓不会被啃坏。
+	 *
+	 * <p>整体半透明的模型同样跳过（判据见 {@link #clearWeakPixels}）。
+	 */
+	private static void pruneLeaves(NativeImage icon) {
+		int width = icon.getWidth();
+		int height = icon.getHeight();
+		if (!hasEnoughSolid(icon)) {
+			return;
+		}
+		// 只扫一遍：一张图里的叶子都是"本来就只连一条边"的凸点；反复扫会把单像素宽的细鳍/触须
+		// 从两端一路啃光（扫一遍只掉两端各一个像素）。
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				if ((icon.getPixel(x, y) >>> 24) < OUTLINE_ALPHA_NOISE) {
+					continue;
+				}
+				if (solidNeighbors(icon, x, y) <= 1) {
+					icon.setPixel(x, y, 0);
+				}
+			}
+		}
+	}
+
+	/** 见 {@link #pruneLeaves}：八邻域里实心像素的个数。 */
+	private static int solidNeighbors(NativeImage icon, int x, int y) {
+		int count = 0;
+		int width = icon.getWidth();
+		int height = icon.getHeight();
+		for (int dy = -1; dy <= 1; dy++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				int nx = x + dx;
+				int ny = y + dy;
+				if ((dx != 0 || dy != 0) && nx >= 0 && ny >= 0 && nx < width && ny < height
+						&& (icon.getPixel(nx, ny) >>> 24) >= OUTLINE_ALPHA_NOISE) {
+					count++;
+				}
+			}
+		}
+		return count;
+	}
+
+	/** 见 {@link #pruneLeaves}：叶子的"实心"门槛，用描边同一个门槛（150）。 */
+	private static final int OUTLINE_ALPHA_NOISE = 150;
+
+	/** 见 {@link #clearWeakPixels}：实心像素够不够多（判断是不是"整体半透明"的模型）。 */
+	private static boolean hasEnoughSolid(NativeImage icon) {
+		int width = icon.getWidth();
+		int height = icon.getHeight();
+		int solidCount = 0;
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				if ((icon.getPixel(x, y) >>> 24) >= WEAK_ALPHA) {
+					solidCount++;
+				}
+			}
+		}
+		return solidCount * 8 >= width * height;
+	}
+
+	/**
+	 * 最后再把残留的半透明像素一律抹掉（同样是"整体半透明的模型不动"）。
+	 *
+	 * <p>前两步只能清掉"不挨实心内容"或"孤立细条"的弱像素；<b>贴着主体长出来的弱斜纹</b>会并进主体、
+	 * 躲过检查。成品图标是像素画，边缘本来就要靠后面那道不透明描边，所以这里直接把 alpha 不足
+	 * {@value #WEAK_ALPHA} 的全部变透明——真实主体是 255，不会受影响。
+	 */
+	private static void hardenWeakAlpha(NativeImage icon) {
+		int width = icon.getWidth();
+		int height = icon.getHeight();
+		int solidCount = 0;
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				if ((icon.getPixel(x, y) >>> 24) >= WEAK_ALPHA) {
+					solidCount++;
+				}
+			}
+		}
+		if (solidCount * 8 < width * height) {
+			return;
+		}
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				int alpha = icon.getPixel(x, y) >>> 24;
+				if (alpha != 0 && alpha < WEAK_ALPHA) {
+					icon.setPixel(x, y, 0);
+				}
+			}
+		}
 	}
 
 	/**
@@ -716,6 +877,12 @@ final class MobHeads {
 		}
 		int[] label = new int[source.length];
 		int[] stack = new int[source.length];
+		// 每个连通块的大小与包围盒（下标 = label）；用来摘掉"一两个像素的孤立碎点"和"1 像素宽的细斜纹"
+		int[] sizes = new int[source.length + 1];
+		int[] minXs = new int[source.length + 1];
+		int[] maxXs = new int[source.length + 1];
+		int[] minYs = new int[source.length + 1];
+		int[] maxYs = new int[source.length + 1];
 		int bestLabel = 0;
 		int bestSize = 0;
 		int nextLabel = 1;
@@ -725,6 +892,10 @@ final class MobHeads {
 			}
 			int size = 0;
 			int top = 0;
+			minXs[nextLabel] = width;
+			maxXs[nextLabel] = -1;
+			minYs[nextLabel] = height;
+			maxYs[nextLabel] = -1;
 			stack[top++] = start;
 			label[start] = nextLabel;
 			while (top > 0) {
@@ -732,6 +903,18 @@ final class MobHeads {
 				size++;
 				int x = current % width;
 				int y = current / width;
+				if (x < minXs[nextLabel]) {
+					minXs[nextLabel] = x;
+				}
+				if (x > maxXs[nextLabel]) {
+					maxXs[nextLabel] = x;
+				}
+				if (y < minYs[nextLabel]) {
+					minYs[nextLabel] = y;
+				}
+				if (y > maxYs[nextLabel]) {
+					maxYs[nextLabel] = y;
+				}
 				if (x > 0) {
 					top = push(label, stack, top, source, current - 1, nextLabel);
 				}
@@ -745,6 +928,7 @@ final class MobHeads {
 					top = push(label, stack, top, source, current + width, nextLabel);
 				}
 			}
+			sizes[nextLabel] = size;
 			if (size > bestSize) {
 				bestSize = size;
 				bestLabel = nextLabel;
@@ -781,11 +965,21 @@ final class MobHeads {
 			}
 		}
 		for (int i = 0; i < source.length; i++) {
-			if (drop[label[i]]) {
+			int value = label[i];
+			// 三种都清掉：离主体远、太小、或者只有 1 像素宽/高（杂色就是这种细点/细斜纹；
+			// 真正的耳朵/犄角/帽檐是立体的，投影出来至少两像素宽）
+			boolean sliver = value != 0 && value != bestLabel
+					&& (sizes[value] < MIN_SLIVER_PIXELS
+							|| maxXs[value] - minXs[value] < 1
+							|| maxYs[value] - minYs[value] < 1);
+			if (drop[value] || sliver) {
 				icon.setPixel(i % width, i / width, 0);
 			}
 		}
 	}
+
+	/** 见 {@link #dropDetachedSlivers}：小于这么多像素的孤立块一律当噪声。 */
+	private static final int MIN_SLIVER_PIXELS = 3;
 
 	/**
 	 * 见 {@link #dropDetachedSlivers}：碎块"整块都离主体超过这么多像素"才当作噪声清掉。
