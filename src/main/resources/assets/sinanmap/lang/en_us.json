@@ -25,7 +25,7 @@
 	"screen.sinanmap.world_map.tip.zoom_in": "Zoom in (+)",
 	"screen.sinanmap.world_map.tip.zoom_out": "Zoom out (-)",
 	"screen.sinanmap.world_map.jump_hint": "x y",
-	"screen.sinanmap.world_map.jump_invalid": "Enter coordinates as \"x y\" (or \"x,y\")",
+	"screen.sinanmap.world_map.jump_invalid": "Invalid coordinates: use \"x y\" or \"x,y\"",
 	"screen.sinanmap.menu.create_here": "New waypoint here…",
 	"screen.sinanmap.menu.teleport_here": "Teleport here",
 	"screen.sinanmap.menu.share_here": "Share location in chat",

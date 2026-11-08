@@ -25,7 +25,7 @@
 	"screen.sinanmap.world_map.tip.zoom_in": "放大（+）",
 	"screen.sinanmap.world_map.tip.zoom_out": "缩小（-）",
 	"screen.sinanmap.world_map.jump_hint": "x y",
-	"screen.sinanmap.world_map.jump_invalid": "坐标要写成「x y」（也支持 x,y）",
+	"screen.sinanmap.world_map.jump_invalid": "坐标错误，要求“x y” 或者 “x,y”",
 	"screen.sinanmap.menu.create_here": "在此新建路径点…",
 	"screen.sinanmap.menu.teleport_here": "传送到此处",
 	"screen.sinanmap.menu.share_here": "在聊天中分享位置",
