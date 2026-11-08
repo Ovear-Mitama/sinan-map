@@ -119,10 +119,13 @@ public final class WorldSaveChunks {
 		/**
 		 * 方块本色，0xRRGGBB。
 		 *
-		 * <p>群系<b>直接向客户端关卡查</b>（{@code minecraft.level}）：原版染色入口本来就收一个
-		 * {@code BlockAndTintGetter}，因此与实时采样那条路问的是同一个东西。
+		 * <p>群系来源见 {@code ClientChunkColorProvider} 的取色入口：已加载区块问客户端关卡，未加载
+		 * （远处）的区块读世界存档，因此与实时采样那条路问的是同一个东西。
+		 *
+		 * @param worldY 这一格自己的高度。群系是<b>三维</b>的（洞穴群系与地表不同），必须按这一格问，
+		 *               不能用一个固定的 y
 		 */
-		int rgb(BlockState state, int worldX, int worldZ);
+		int rgb(BlockState state, int worldX, int worldY, int worldZ);
 
 		/**
 		 * 把这一层盖到底色上。
@@ -132,9 +135,10 @@ public final class WorldSaveChunks {
 		 *
 		 * @param bedRgb     底下那层的本色
 		 * @param layerState 层那一格的状态（水或冰）
+		 * @param worldY     层自己的高度（水色的群系按它问）
 		 * @param depth      层顶面到底面的格数
 		 */
-		int layered(int bedRgb, BlockState layerState, int worldX, int worldZ, int depth);
+		int layered(int bedRgb, BlockState layerState, int worldX, int worldY, int worldZ, int depth);
 
 		/**
 		 * 被水盖住的那一列的底色，0xRRGGBB。
@@ -143,8 +147,10 @@ public final class WorldSaveChunks {
 		 * 取色。水面合成只压覆盖层、不压底（见 {@link #layered}），底的亮度全靠这里定——仍按光源
 		 * 取色就会透出一块偏亮的色斑。只在覆盖层是水、且底色自发光时才有区别；实时采样必须用同一条
 		 * 规则，否则加载范围的边界上会出现一道"近处水底偏暗、远处偏亮"的缝。
+		 *
+		 * @param worldY 底色自己那一格的高度（群系按它问，见 {@link #rgb}）
 		 */
-		int coveredRgb(BlockState bedState, int worldX, int worldZ);
+		int coveredRgb(BlockState bedState, int worldX, int worldY, int worldZ);
 	}
 
 	/** 前几次尝试都记一行日志：这条路到底成不成立，看日志比猜快。 */
@@ -308,10 +314,45 @@ public final class WorldSaveChunks {
 		if (level == null) {
 			return null;
 		}
-		int chunkX = blockX >> 4;
-		int chunkZ = blockZ >> 4;
-		int sectionY = blockY >> 4;
-		long key = (long) (chunkX & 0xFFFFF) << 40 | (long) (chunkZ & 0xFFFFF) << 20 | sectionY & 0xFFFFF;
+		Holder<Biome> biome = biomeAt(minecraft, level, blockX, blockY, blockZ);
+		return biome == null ? null
+				: biome.unwrapKey().map(holder -> holder.identifier().toString()).orElse(null);
+	}
+
+	/**
+	 * 存档里某一格的群系；这一格所在的区块/节没有群系数据时返回 null。
+	 *
+	 * <p>给地图取色用（{@code WorldBiomeTints}）：未加载的区块没有客户端群系，但又必须按真实群系染色，
+	 * 才能与走近之后看到的颜色一致。缓存与 {@link #biomeIdAt} 共用。
+	 *
+	 * <p><b>只在渲染线程调用</b>：缓存本身不是并发容器（{@link #biomeIdAt} 也是渲染线程上的悬停提示）。
+	 */
+	static Holder<Biome> biomeAt(Minecraft minecraft, ClientLevel level, int blockX, int blockY, int blockZ) {
+		PalettedContainerRO<Holder<Biome>> section = biomeSection(minecraft, level,
+				blockX >> 4, blockZ >> 4, blockY >> 4);
+		if (section == null) {
+			return null;
+		}
+		// 群系是每 4×4×4 格一个值（quart 坐标），不是每格一个：这一节的容器尺寸是 4×4×4，
+		// 传 0~15 进去会越界。调色板不止一个值时它是安静地读到隔壁那一格的群系，
+		// 而整节同一个群系时原版用的是零位打包、会当场校验并抛异常
+		// （"The value 108 is not in the specified inclusive range of 0 to 63"）——整局崩溃。
+		// 所以三个分量都要先右移 2 位。
+		return section.get((blockX & 15) >> 2, (blockY & 15) >> 2, (blockZ & 15) >> 2);
+	}
+
+	/**
+	 * 取某一节的群系容器，按"区块 + 节"缓存。
+	 *
+	 * <p>多一层"上一节"的记录：取色时同一列/相邻几格会连续问同一节（一次邻域混合就是 25 次），
+	 * 有它就不必每次都进 LRU 表。读不到（还没有/还没生成）时不记，留着下次再问。
+	 */
+	private static PalettedContainerRO<Holder<Biome>> biomeSection(Minecraft minecraft, ClientLevel level,
+			int chunkX, int chunkZ, int sectionY) {
+		long key = biomeSectionKey(chunkX, chunkZ, sectionY);
+		if (key == lastBiomeKey && lastBiomeSection != null) {
+			return lastBiomeSection;
+		}
 		PalettedContainerRO<Holder<Biome>> section = BIOME_SECTIONS.get(key);
 		if (section == null) {
 			section = readBiomeSection(minecraft, level, chunkX, chunkZ, sectionY);
@@ -320,15 +361,45 @@ public final class WorldSaveChunks {
 			}
 			BIOME_SECTIONS.put(key, section);
 		}
-		// 群系是每 4×4×4 格一个值（quart 坐标），不是每格一个：这一节的容器尺寸是 4×4×4，
-		// 传 0~15 进去会越界。调色板不止一个值时它是安静地读到隔壁那一格的群系，
-		// 而整节同一个群系时原版用的是零位打包、会当场校验并抛异常
-		// （"The value 108 is not in the specified inclusive range of 0 to 63"）——整局崩溃。
-		// 所以三个分量都要先右移 2 位。
-		Holder<Biome> biome = section.get((blockX & 15) >> 2, (blockY & 15) >> 2, (blockZ & 15) >> 2);
-		return biome == null ? null
-				: biome.unwrapKey().map(holder -> holder.identifier().toString()).orElse(null);
+		lastBiomeKey = key;
+		lastBiomeSection = section;
+		return section;
 	}
+
+	/** "区块 + 节"的缓存键，见 {@link #biomeSection}。 */
+	private static long biomeSectionKey(int chunkX, int chunkZ, int sectionY) {
+		return (long) (chunkX & 0xFFFFF) << 40 | (long) (chunkZ & 0xFFFFF) << 20 | sectionY & 0xFFFFF;
+	}
+
+	/**
+	 * 把这次<b>已经解析好</b>的区块 NBT 里的群系节记进缓存。
+	 *
+	 * <p>着色（{@link #biomeAt}）要按列问群系，而这时同一块的 NBT 刚刚由后台线程读进来、已经在手上——
+	 * 不先记下来，着色就会为同一块再读一遍区域文件（渲染线程上的重复磁盘 I/O，一页上千块就是上千次）。
+	 *
+	 * <p>只在渲染线程调用（{@link #BIOME_SECTIONS} 不是并发容器）。
+	 */
+	static void rememberBiomeSections(CompoundTag chunk, int chunkX, int chunkZ, ClientLevel level) {
+		if (level == null) {
+			return;
+		}
+		Codec<PalettedContainerRO<Holder<Biome>>> codec = biomeCodec(level);
+		if (codec == null) {
+			return;
+		}
+		ListTag sections = chunk.getListOrEmpty("sections");
+		for (int i = 0; i < sections.size(); i++) {
+			CompoundTag section = sections.getCompoundOrEmpty(i);
+			int sectionY = section.getByteOr("Y", (byte) 0);
+			section.getCompound("biomes")
+					.flatMap(tag -> codec.parse(NbtOps.INSTANCE, tag).result())
+					.ifPresent(container -> BIOME_SECTIONS.put(
+							biomeSectionKey(chunkX, chunkZ, sectionY), container));
+		}
+	}
+
+	private static long lastBiomeKey = Long.MIN_VALUE;
+	private static PalettedContainerRO<Holder<Biome>> lastBiomeSection;
 
 	/** 解析某一节里的群系调色板数据；拿不到就返回 null。 */
 	private static PalettedContainerRO<Holder<Biome>> readBiomeSection(
@@ -498,8 +569,14 @@ public final class WorldSaveChunks {
 	private static Codec<PalettedContainerRO<Holder<Biome>>> biomeCodec;
 	private static RegistryAccess biomeCodecRegistries;
 
-	/** 已解析的群系节，见 {@link #biomeIdAt}。 */
-	private static final int BIOME_SECTION_LIMIT = 512;
+	/**
+	 * 已解析的群系节，见 {@link #biomeIdAt}。
+	 *
+	 * <p>取色会一次把整块（约 20~30 节）都记进来（见 {@link #rememberBiomeSections}），而洞穴的着色
+	 * 要等后台扫描完成、隔一两帧才做——上限太小会把刚记下的节挤掉、逼着色再读一次文件。
+	 * 每节只是一份很小的调色板容器，{@value #BIOME_SECTION_LIMIT} 节的内存仍然只有几 MB。
+	 */
+	private static final int BIOME_SECTION_LIMIT = 2048;
 	private static final Map<Long, PalettedContainerRO<Holder<Biome>>> BIOME_SECTIONS =
 			new LinkedHashMap<>(128, 0.75F, true) {
 				@Override
@@ -552,6 +629,13 @@ public final class WorldSaveChunks {
 			return null;
 		}
 		long now = System.nanoTime();
+		if (level != regionDirLevel) {
+			// 换了关卡实例（换维度也是换实例）：群系节缓存只按区块坐标作键、不带维度身份，
+			// 留着会让下界/末地读到主世界的群系（取色时整片染错）。只清群系，高度缓存另有它的用途。
+			BIOME_SECTIONS.clear();
+			lastBiomeKey = Long.MIN_VALUE;
+			lastBiomeSection = null;
+		}
 		if (level == regionDirLevel
 				&& (regionDir != null || now - regionDirCheckedAt < REGION_DIR_RETRY_NANOS)) {
 			return regionDir;
@@ -612,6 +696,8 @@ public final class WorldSaveChunks {
 			skyLightColumns = 0L;
 			// 换了世界：上一个存档解析出来的群系节不能再用了（同一区块坐标会是别的地形）
 			BIOME_SECTIONS.clear();
+			lastBiomeKey = Long.MIN_VALUE;
+			lastBiomeSection = null;
 			// 高度图同理：它也按区块坐标作键、不带世界标识
 			HEIGHT_CACHE.clear();
 			if (server != null) {
@@ -1029,17 +1115,17 @@ public final class WorldSaveChunks {
 				// 洞穴里的水面/冰面同样要盖一层、并把底下露出来，见 toRecord 里地表那一套。
 				// 水面（flatSheet）的底色走 coveredRgb：被水盖住时它不再当光源，见 ColumnColor#coveredRgb
 				int bedRgb = column.flatSheet()
-						? colors.coveredRgb(column.bedState(), column.worldX(), column.worldZ())
-						: colors.rgb(column.bedState(), column.worldX(), column.worldZ());
-				rgb = colors.layered(bedRgb, column.floorState(), column.worldX(), column.worldZ(),
-						column.floorY() - column.bedY());
+						? colors.coveredRgb(column.bedState(), column.worldX(), column.bedY(), column.worldZ())
+						: colors.rgb(column.bedState(), column.worldX(), column.bedY(), column.worldZ());
+				rgb = colors.layered(bedRgb, column.floorState(), column.worldX(), column.floorY(),
+						column.worldZ(), column.floorY() - column.bedY());
 				// 水的明暗按底算（深浅要看水深）；冰反过来——它是跟着地形走的固体薄壳
 				if (column.flatSheet()) {
 					displayY = column.bedY();
 				}
 			} else {
 				// 非层方块，或一直扫到窗口底部都没找到底（深渊）：本色就是这一格本身
-				rgb = colors.rgb(column.floorState(), column.worldX(), column.worldZ());
+				rgb = colors.rgb(column.floorState(), column.worldX(), column.floorY(), column.worldZ());
 			}
 			record.setColumn(index, rgb, displayY, column.skyLight(), column.blockLight());
 			record.setFlatSheet(index, column.flatSheet());
@@ -1211,8 +1297,9 @@ public final class WorldSaveChunks {
 		java.util.Arrays.fill(topY, Integer.MIN_VALUE);
 		int[] topSky = new int[ChunkRecord.COLUMNS];
 		int[] topBlock = new int[ChunkRecord.COLUMNS];
-		// 每列的覆盖层（水或冰），没有就是 null
+		// 每列的覆盖层（水或冰），没有就是 null；与之配套的高度（群系按层自己那一格问）
 		BlockState[] overlay = new BlockState[ChunkRecord.COLUMNS];
+		int[] overlayY = new int[ChunkRecord.COLUMNS];
 		// 每列顶面是不是自发光方块（岩浆这类），见 ChunkRecord#FLAG_EMISSIVE
 		boolean[] emissive = new boolean[ChunkRecord.COLUMNS];
 		// 每列真正要画的那一层：高度与本色
@@ -1304,6 +1391,7 @@ public final class WorldSaveChunks {
 							// 水、冰接着往下看：它们是盖在上面的一层，不是底
 							if (overlay[index] == null) {
 								overlay[index] = state;
+								overlayY[index] = worldY;
 							}
 							continue;
 						}
@@ -1311,8 +1399,8 @@ public final class WorldSaveChunks {
 						// 被水盖住的底色不算光源（见 ColumnColor#coveredRgb）：覆盖层自上而下扫到时
 						// 已经记下，这里能直接判断这一格是否压在水下。
 						bedRgb[index] = overlay[index] != null && colors.isWater(overlay[index])
-								? colors.coveredRgb(state, chunkX * 16 + x, chunkZ * 16 + z)
-								: colors.rgb(state, chunkX * 16 + x, chunkZ * 16 + z);
+								? colors.coveredRgb(state, chunkX * 16 + x, worldY, chunkZ * 16 + z)
+								: colors.rgb(state, chunkX * 16 + x, worldY, chunkZ * 16 + z);
 						if (--remaining == 0) {
 							// 每一列都找到底了，剩下的节不必再看
 							break sections;
@@ -1347,14 +1435,14 @@ public final class WorldSaveChunks {
 				columnHeight = bedY[index];
 			} else if (bedY[index] != Integer.MIN_VALUE) {
 				rgb = colors.layered(bedRgb[index], overlay[index],
-						chunkX * 16 + index % 16, chunkZ * 16 + index / 16,
+						chunkX * 16 + index % 16, overlayY[index], chunkZ * 16 + index / 16,
 						topY[index] - bedY[index]);
 				// 水的明暗按底算（深浅要看水深）；冰反过来——它是跟着地形走的固体薄壳
 				columnHeight = colors.isWater(overlay[index]) ? bedY[index] : topY[index];
 			} else {
 				// 一直扫到底都没找到底面（深渊）：就是纯层色
 				rgb = colors.rgb(overlay[index],
-						chunkX * 16 + index % 16, chunkZ * 16 + index / 16);
+						chunkX * 16 + index % 16, topY[index], chunkZ * 16 + index / 16);
 				columnHeight = topY[index];
 			}
 			record.setColumn(index, rgb, columnHeight, skyAllZero ? 15 : topSky[index], topBlock[index]);

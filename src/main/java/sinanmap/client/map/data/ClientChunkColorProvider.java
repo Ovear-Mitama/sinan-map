@@ -24,6 +24,7 @@ import net.minecraft.client.color.block.BlockTintSource;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.BiomeColors;
+import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.tags.BlockTags;
@@ -535,9 +536,18 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	/** {@link #storage} 是按哪个维度打开的，用来判断"要不要换一套目录"。 */
 	private String storageDimension;
 
+	/**
+	 * 取色用的群系入口：已加载区块问关卡，未加载（远处）的区块读世界存档，见 {@link WorldBiomeTints}。
+	 *
+	 * <p>实时采样与世界存档两条着色路都用它，于是"远处的群系"不再一律是平原，加载范围边缘的
+	 * 邻域混合也不会再混进平原色。
+	 */
+	private final WorldBiomeTints biomeTints;
+
 	public ClientChunkColorProvider(Minecraft minecraft, MinimapSettings settings) {
 		this.minecraft = minecraft;
 		this.settings = settings;
+		this.biomeTints = new WorldBiomeTints(minecraft);
 		this.prefetcher = (ThreadPoolExecutor) Executors.newFixedThreadPool(
 				settings.effectivePrefetchThreads(), task -> {
 					Thread thread = new Thread(task, "sinanmap-prefetch");
@@ -1751,6 +1761,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				prefetchMissing.add(done.key());
 				continue;
 			}
+			// 这一块的 NBT 已经在手上：先把群系节记进缓存，着色（makeRecord / makeCaveRecord）
+			// 就不必为同一块再把区域文件读一遍
+			WorldSaveChunks.rememberBiomeSections(done.read().tag(), done.chunkX(), done.chunkZ(), minecraft.level);
 			if (LayerSelector.isCave(done.layer())) {
 				if (caveBatch.size() < MAX_CAVE_SCAN_PER_PUMP) {
 					// 洞穴："选列"要按列扫区块 NBT，是纯计算，交给并行池去做（着色在 applyCaveBatch 里）
@@ -1855,13 +1868,13 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	/**
 	 * 世界存档里读到的方块本色：与实时采样共用同一套贴图配色与生物群系染色规则。
 	 *
-	 * <p>群系<b>直接问客户端关卡</b>（{@code minecraft.level}）：原版染色入口本来就是从一个
-	 * {@code BlockAndTintGetter} 上取群系色，把关卡传进去就与实时采样问的是同一个东西。
+	 * <p>群系由 {@link #biomeTints} 取：已加载区块问客户端关卡，未加载的（远处）区块读世界存档，
+	 * 两条路问的是同一份群系，走近之后颜色不会再变一次。
 	 */
 	@Override
-	public int rgb(BlockState state, int worldX, int worldZ) {
-		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(worldX, 64, worldZ);
-		return baseColorOf(minecraft.level, minecraft.getBlockColors(), state, pos);
+	public int rgb(BlockState state, int worldX, int worldY, int worldZ) {
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(worldX, worldY, worldZ);
+		return baseColorOf(biomeTints, minecraft.getBlockColors(), state, pos);
 	}
 
 	/** 世界存档里的"是不是盖在上面的一层"判定。必须与实时采样同一套规则，否则近处与远处会画出两种样子。 */
@@ -1884,10 +1897,10 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 
 	/** 世界存档里的层合成：同样与实时采样共用一套盖色规则。群系来源见 {@link #rgb}。 */
 	@Override
-	public int layered(int bedRgb, BlockState layerState, int worldX, int worldZ, int depth) {
-		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(worldX, 64, worldZ);
+	public int layered(int bedRgb, BlockState layerState, int worldX, int worldY, int worldZ, int depth) {
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(worldX, worldY, worldZ);
 		boolean water = isWaterBlock(layerState);
-		int layerRgb = baseColorOf(minecraft.level, minecraft.getBlockColors(), layerState, pos);
+		int layerRgb = baseColorOf(biomeTints, minecraft.getBlockColors(), layerState, pos);
 		// 与实时采样同一条规则：深度只压覆盖层，不压底
 		int tint = water ? scaleChannels(layerRgb, 1.0 - depthDim(depth)) : layerRgb;
 		double opacity = water ? WATER_OPACITY : ICE_OPACITY;
@@ -1896,9 +1909,19 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 
 	/** 世界存档里的"水下底色"取色：与实时采样同一条规则，见 {@link WorldSaveChunks.ColumnColor#coveredRgb}。 */
 	@Override
-	public int coveredRgb(BlockState bedState, int worldX, int worldZ) {
-		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(worldX, 64, worldZ);
-		return baseColorOf(minecraft.level, minecraft.getBlockColors(), bedState, pos, false);
+	public int coveredRgb(BlockState bedState, int worldX, int worldY, int worldZ) {
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(worldX, worldY, worldZ);
+		return baseColorOf(biomeTints, minecraft.getBlockColors(), bedState, pos, false);
+	}
+
+	/**
+	 * 客户端区块加载/卸载后丢掉这块附近的群系染色缓存（见 {@link WorldBiomeTints}）。
+	 *
+	 * <p>只在"原地缓存里可能有基于平原的临时值"时需要它：区块一加载，邻域里原先问不到的群系就能从
+	 * 关卡拿到，缓存必须跟着原版 {@code ClientLevel#onChunkLoaded} 一起作废。
+	 */
+	public void invalidateBiomeTints(ClientLevel level, int chunkX, int chunkZ) {
+		biomeTints.invalidate(level, chunkX, chunkZ);
 	}
 
 	/**
@@ -2003,7 +2026,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 						shadingY = (int) (sample >> 32);
 					}
 				} else {
-					rgb = baseColorOf(level, blockColors, state, pos);
+					rgb = baseColorOf(biomeTints, blockColors, state, pos);
 				}
 
 				// 光照取取材那一格上方：固体方块自身的光照恒为 0
@@ -2081,7 +2104,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	/** {@link #layeredSample} 的实际计算；拆出来只为在<b>外层</b>计一次耗时，行为与原先逐字相同。 */
 	private long layeredSampleValue(ClientLevel level, LevelChunk chunk, BlockColors blockColors,
 			int worldX, int worldZ, int surfaceY, BlockState surfaceState, BlockPos surfacePos) {
-		int layer = baseColorOf(level, blockColors, surfaceState, surfacePos);
+		int layer = baseColorOf(biomeTints, blockColors, surfaceState, surfacePos);
 		boolean water = isWaterBlock(surfaceState);
 		double opacity = water ? WATER_OPACITY : ICE_OPACITY;
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -2102,8 +2125,8 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			// 的色斑（见 BlockTextureColors#coveredColorOf 与 #coveredRgb）。水面之上不这样——
 			// 那一列不叠水、走的是普通的 baseColorOf，仍然按光源显示。
 			int bed = water && state.getLightEmission() > 0
-					? baseColorOf(level, blockColors, state, pos, false)
-					: baseColorOf(level, blockColors, state, pos);
+					? baseColorOf(biomeTints, blockColors, state, pos, false)
+					: baseColorOf(biomeTints, blockColors, state, pos);
 			// 深浅只压覆盖层：水底的贡献固定按本色透出来，才能一直看得见底
 			int tint = water
 					? scaleChannels(layer, 1.0 - depthDim(surfaceY - y))
@@ -2400,7 +2423,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 					displayY = (int) (sample >> 32);
 				}
 			} else {
-				rgb = baseColorOf(level, minecraft.getBlockColors(), state, pos);
+				rgb = baseColorOf(biomeTints, minecraft.getBlockColors(), state, pos);
 			}
 			slice.record.setColumn(index,
 					rgb,
@@ -2501,21 +2524,21 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	 * <p>本色取方块朝上那一面的贴图平均色，带染色的方块再乘生物群系染色——与原版渲染"灰度贴图 ×
 	 * 染色"是同一套算法。以前用 {@code MapColor}（原版地图的卡通色板），又亮又饱和、和游戏里对不上。
 	 *
-	 * <p>{@code level} 就是"从哪儿问群系"：实时采样与从世界存档读的那两条路都直接传客户端关卡，因此
-	 * 两边问的是同一个东西。
+	 * <p>{@code level} 就是"从哪儿问群系"：实时采样与从世界存档读的那两条路都传 {@link #biomeTints}，
+	 * 因此两边问的是同一个东西（见 {@link WorldBiomeTints}）。
 	 */
-	private int baseColorOf(ClientLevel level, BlockColors blockColors, BlockState state, BlockPos pos) {
+	private int baseColorOf(BlockAndTintGetter level, BlockColors blockColors, BlockState state, BlockPos pos) {
 		return baseColorOf(level, blockColors, state, pos, state.getLightEmission() > 0);
 	}
 
 	/**
-	 * {@link #baseColorOf(ClientLevel, BlockColors, BlockState, BlockPos)} 的实际实现。
+	 * {@link #baseColorOf(BlockAndTintGetter, BlockColors, BlockState, BlockPos)} 的实际实现。
 	 *
 	 * <p>{@code emissive} 单独传进来，是为了给"被水盖住的底色"留一个口子：那时自发光方块（岩浆块）
 	 * 不再当光源，走 {@link BlockTextureColors#coveredColorOf}。"有没有被水盖住"只有调用方知道，所以
 	 * 只能由调用方传下来，见 {@link #coveredRgb} 与 {@code layeredSampleValue}。
 	 */
-	private int baseColorOf(ClientLevel level, BlockColors blockColors, BlockState state, BlockPos pos,
+	private int baseColorOf(BlockAndTintGetter level, BlockColors blockColors, BlockState state, BlockPos pos,
 			boolean emissive) {
 		// 岩浆按方块坐标从贴图里取像素：整片岩浆湖取平均色会变成一块死板的纯色，
 		// 见 BlockTextureColors#lavaColor

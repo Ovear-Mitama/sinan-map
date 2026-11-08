@@ -1,5 +1,6 @@
 package sinanmap.client;
 
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -37,6 +38,10 @@ public final class SinanClient {
 		ClientTickEvents.END_CLIENT_TICK.register(client -> MinimapSettingsIO.tick(settings));
 		ClientChunkColorProvider colorProvider =
 				new ClientChunkColorProvider(Minecraft.getInstance(), settings);
+		// 区块加载：取色用的群系缓存里可能存着"这块还没到、只能按平原算"的临时值，
+		// 跟着原版 ClientLevel#onChunkLoaded 一起作废，加载范围边缘的颜色才会立刻对齐
+		ClientChunkEvents.CHUNK_LOAD.register((level, chunk) ->
+				colorProvider.invalidateBiomeTints(level, chunk.getPos().x(), chunk.getPos().z()));
 		MinimapHud minimap = new MinimapHud(colorProvider, settings);
 		// 游戏内（3D 世界里）的路径点标记先注册：它是"撒在世界里"的一层，小地图压在它上面更合理
 		// （反过来注册的话，路径点会画到小地图的方块上）；它读小地图那份设置里的"HUD 距离/缩放"

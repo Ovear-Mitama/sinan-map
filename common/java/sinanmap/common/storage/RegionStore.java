@@ -59,8 +59,12 @@ public final class RegionStore implements Closeable {
 	 *
 	 * <p><b>32 → 33</b>：落盘从"每区块固定 2048 字节"改成"逐块 deflate 压缩 + 索引表"。字节布局整个换了，
 	 * 旧文件必须当作没有数据。
+	 *
+	 * <p><b>33 → 34</b>：群系染色改为"未加载区块读世界存档"（{@code WorldBiomeTints}）。旧版本里从世界
+	 * 存档读到的那些区块是按<b>平原</b>染的色，已经烘进落盘的本色里、无法事后重算，只能整版本作废一次；
+	 * 单人/局域网主机的区块会重新从世界存档按真实群系读回来。
 	 */
-	private static final int VERSION = 33;
+	private static final int VERSION = 34;
 
 	/** 索引表在文件里的起点（前面是魔数与版本）。 */
 	private static final int TABLE_OFFSET = 16;
