@@ -60,6 +60,17 @@ public final class ChunkRecord {
 	public static final int FLAG_NO_DATA = 4;
 
 	/**
+	 * 标志位：这一列的本色<b>已经按发光亮度归一化过</b>（岩浆，见 {@code BlockTextureColors#lavaColor}）。
+	 *
+	 * <p>着色时自发光方块会被 {@link #brighten} 拉亮到总亮度下限；而岩浆是"红远大于绿蓝"的橙红，
+	 * 按总亮度拉会把红色通道顶到 255、再把绿蓝抬上去，色相一路偏成荧光黄（"岩浆颜色很奇怪"）。
+	 * 采样岩浆时已经按<b>最亮通道</b>做过归一化、色相是对的，这一位就是告诉着色"别再拉亮它"。
+	 *
+	 * <p>萤石、海晶灯这类本色不饱和的光源不走这一位，照旧按 {@link #brighten} 拉亮。
+	 */
+	public static final int FLAG_GLOW_NORMALIZED = 8;
+
+	/**
 	 * 昼夜衰减的放大倍率：&gt;1 表示比原版衰减得<b>更</b>暗。
 	 *
 	 * <p>夜间地表亮度定在白天的大约三成：太亮整张图像蒙了层灰、光源也跳不出来；太暗又读不出地形。
@@ -164,6 +175,15 @@ public final class ChunkRecord {
 		return (flags(index) & FLAG_EMISSIVE) != 0;
 	}
 
+	/** 标记这一列的本色已经按发光亮度归一化过（岩浆），见 {@link #FLAG_GLOW_NORMALIZED}。 */
+	public void setGlowNormalized(int index, boolean normalized) {
+		setFlag(index, FLAG_GLOW_NORMALIZED, normalized);
+	}
+
+	public boolean isGlowNormalized(int index) {
+		return (flags(index) & FLAG_GLOW_NORMALIZED) != 0;
+	}
+
 	/** 标记这一列没有数据，见 {@link #FLAG_NO_DATA}。 */
 	public void setNoData(int index) {
 		// 置位的同时把这一列的数据清空；其余标志位（水、自发光）保持原样，与改动前一致
@@ -259,8 +279,12 @@ public final class ChunkRecord {
 			// 自发光方块（岩浆这类）：先抬亮本色（见 brighten），再乘一个"只含地形起伏、不含光照"的
 			// 系数（见 SurfaceShading#reliefFactor）——光照项会把它压暗故不用，但高度/坡度必须留，
 			// 否则整片岩浆是平涂、看不出熔岩湖的高低与边缘。
+			// 岩浆的本色已经按最亮通道归一化过（见 FLAG_GLOW_NORMALIZED），再拉亮只会把色相推向黄色；
+			// 它的起伏也压在 [0.96, 1.04]，否则最暗那档会把整片岩浆压暗一截（实测比游戏里暗 10%）
 			out[i] = isEmissive(i)
-					? SurfaceShading.shade(brighten(rgb(i)), reliefs[i])
+					? (isGlowNormalized(i)
+							? SurfaceShading.shade(rgb(i), glowRelief(reliefs[i]))
+							: SurfaceShading.shade(brighten(rgb(i)), reliefs[i]))
 					: SurfaceShading.shade(rgb(i), factors[i]);
 		}
 		return out;
@@ -275,7 +299,25 @@ public final class ChunkRecord {
 	 */
 	private static final int GLOW_MIN_TOTAL = 480;
 
-	/** 把颜色整体拉亮到总亮度不低于 {@link #GLOW_MIN_TOTAL}；本来就够亮就原样返回。 */
+	/**
+	 * 岩浆（已归一化的自发光列）用的起伏系数：把全局的
+	 * [{@code EMISSIVE_RELIEF_MIN}, {@code EMISSIVE_RELIEF_MAX}] 压到 {@code [0.96, 1.04]}。
+	 *
+	 * <p>本色已经按最亮通道撑到满值，再乘 0.88 就会让整片熔岩湖比游戏里暗一截（实测 {@code #E08125}
+	 * 对 {@code #FF8D22}）。压窄之后仍能看出熔岩湖的高低与边缘，但整体亮度对得上。
+	 */
+	private static double glowRelief(double relief) {
+		double span = SurfaceShading.EMISSIVE_RELIEF_MAX - SurfaceShading.EMISSIVE_RELIEF_MIN;
+		double t = span > 0 ? (relief - SurfaceShading.EMISSIVE_RELIEF_MIN) / span : 0.5;
+		return 0.96 + Math.clamp(t, 0.0, 1.0) * 0.08;
+	}
+
+	/**
+	 * 把颜色整体拉亮到总亮度不低于 {@link #GLOW_MIN_TOTAL}；本来就够亮就原样返回。
+	 *
+	 * <p>缩放系数按"最亮通道还剩多少余量"封顶：橙红这类颜色按总和拉亮会先把红通道顶到 255、再继续
+	 * 抬绿蓝，色相偏成荧光黄。封顶之后最多抬到"最亮通道刚好满"，宁可暗一点也不变色。
+	 */
 	private static int brighten(int rgb) {
 		int red = (rgb >> 16) & 0xFF;
 		int green = (rgb >> 8) & 0xFF;
@@ -285,6 +327,11 @@ public final class ChunkRecord {
 			return rgb;
 		}
 		double factor = GLOW_MIN_TOTAL / (double) total;
+		int value = Math.max(red, Math.max(green, blue));
+		if (value > 0) {
+			// 不允许"某个通道先封顶"：那一步之后继续拉高其它通道就是把色相拉偏
+			factor = Math.min(factor, 255.0 / value);
+		}
 		return Math.clamp((int) (red * factor), 0, 255) << 16
 				| Math.clamp((int) (green * factor), 0, 255) << 8
 				| Math.clamp((int) (blue * factor), 0, 255);

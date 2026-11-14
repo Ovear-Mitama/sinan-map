@@ -60,51 +60,6 @@ final class BlockTextureColors {
 	private static final Identifier FIRE_SPRITE = Identifier.withDefaultNamespace("block/fire_0");
 	private static final Identifier SOUL_FIRE_SPRITE = Identifier.withDefaultNamespace("block/soul_fire_0");
 
-	/**
-	 * 岩浆过渡用的降采样边长：把单帧 16×16 盒式平均成 {@value #LAVA_TILE_SIZE}×{@value #LAVA_TILE_SIZE}。
-	 *
-	 * <p>岩浆贴图有高频噪点，直接双线性采样会让相邻方块的颜色跟着噪点跳（实测总亮度跳变可达 50），
-	 * 画出来是"斑点"；先平均成小块、抹掉高频，过渡才平滑。
-	 */
-	private static final int LAVA_TILE_SIZE = 8;
-
-	/**
-	 * 岩浆采样步长（纹素/格）：取 {@value #LAVA_SAMPLE_STEP}，小图边长 {@value #LAVA_TILE_SIZE}，
-	 * 整片岩浆走完一个循环约 32 格。
-	 *
-	 * <p>0.15 → {@value}：之前一片小岩浆池还是只走过一两个纹素，明暗过渡太稀、看起来仍接近纯色；
-	 * 加大到 {@value} 后过渡更密更明显。仍远小于 1 纹素/格，不会跳色出斑点。
-	 */
-	private static final float LAVA_SAMPLE_STEP = 0.25F;
-
-	/**
-	 * 采样相位的"平滑扰动"幅度（纹素）与频率。
-	 *
-	 * <p>按 16 格一挡加偏移会在格边界跳变（实测总亮度跳变 119），画出来是一道道硬缝；
-	 * 改成随位置连续变化的正弦扰动，既能打散重复图案又处处可导、不产生缝。
-	 * <b>1.0 → {@value}</b>：步长加大后扰动也加大，图案才铺得开、不显得重复死板。
-	 */
-	private static final float LAVA_WARP = 2.0F;
-	private static final float LAVA_WARP_FREQ = 0.055F;
-
-	/**
-	 * 发光下限（三通道之和），<b>必须与 {@code ChunkRecord} 里的拉亮规则一致</b>。
-	 *
-	 * <p>着色时自发光方块会被等比拉到这个下限，会抹平贴图明暗；所以这里先在本色上把亮度抬过这条线，
-	 * 见 {@link #liftAboveGlowFloor}。
-	 */
-	private static final int GLOW_FLOOR_TOTAL = 480;
-
-	/**
-	 * 抬亮后的总亮度上限，避免整片岩浆过曝、糊成一片纯亮色。
-	 *
-	 * <p>600 → 680 → 760 → {@value}：前几次一路放宽想加强对比，结果<b>亮部反而过曝</b>——
-	 * 岩浆本色上限还要乘自发光起伏系数（最高 1.08，见 {@code SurfaceShading#EMISSIVE_RELIEF_MAX}），
-	 * 760×1.08 已超三通道之和的上限 765、被逐通道钳成偏白，显得"越过渡越亮、不自然"。
-	 * 收到 {@value} 后乘出来最高约 670，仍有明显过渡、不再发白。
-	 */
-	private static final int GLOW_CEIL_TOTAL = 620;
-
 	/** 贴图名 → 平均色。多线程共用，见类注释的线程模型。 */
 	private final Map<Identifier, Integer> bySprite = new ConcurrentHashMap<>();
 
@@ -210,157 +165,35 @@ final class BlockTextureColors {
 		return null;
 	}
 
-	/** 贴图名 → 供 {@link #lavaColor} 采样的降采样小图。只给岩浆用，多线程共用。 */
-	private final Map<Identifier, LavaTile> byPixels = new ConcurrentHashMap<>();
-
 	/**
-	 * 一张岩浆贴图的"单帧降采样小图"：边长 {@code size}，逐行存放 ARGB 的 RGB 部分；
-	 * {@code minTotal}/{@code maxTotal} 是小图里三通道之和的最小/最大值，供
-	 * {@link #liftAboveGlowFloor} 把整张小图的明暗<b>撑满</b>可用亮度带（见那里的说明）。
-	 */
-	private record LavaTile(int[] rgb, int size, int minTotal, int maxTotal) {
-	}
-
-	/**
-	 * 岩浆的颜色：从"降采样后的单帧贴图"里按方块坐标<b>平滑采样</b>，而不是取整张的平均色。
+	 * 岩浆的颜色：<b>整张贴图的平均色</b>，整片岩浆共用一个颜色。
 	 *
-	 * <p>岩浆是<b>一整片</b>，取平均色会变成死板的纯色。贴图本身带纹理，但直接逐纹素采样的高频噪点
-	 * 会让相邻方块跳色，所以先盒式平均成 {@link #LAVA_TILE_SIZE}×{@link #LAVA_TILE_SIZE} 小图，
-	 * 再用很小的 {@link #LAVA_SAMPLE_STEP} 在它上面推进并做双线性插值：相邻方块取到的是相近又微微
-	 * 推进的位置，明暗与色相于是连续缓变。再加一个随位置连续变化的正弦扰动（{@link #LAVA_WARP}）
-	 * 打散重复图案。
+	 * <p><b>为什么是平均色</b>：以前按方块坐标在贴图上"逐块采样"，想让大片熔岩有过渡，但采样位置天然
+	 * 形成以几十格为周期的循环，一整片熔岩湖就出现一大块偏亮、一大块偏暗，收窄幅度也照样花。
+	 * 岩浆在游戏里本来就是一整片同温的流体，用平均色最自然；
+	 * 起伏交给着色时的地形高度/坡度（{@link sinanmap.common.map.SurfaceShading#reliefFactor}）。
 	 *
-	 * <p>这里要先把本色抬到发光下限<b>之上</b>：着色那一步按总亮度等比缩放，会抹平贴图的明暗差异；
-	 * 先抬过下限，等比缩放不再改动它，过渡得以保留（见 {@link #liftAboveGlowFloor}）。
+	 * <p>取平均值时用 {@link TextureAverage#averageBrightest}：岩浆贴图有一半是暗红"结壳"，
+	 * 算术平均会偏暗，取偏亮的那一档才接近游戏里看到的亮橙。
 	 */
-	int lavaColor(Minecraft minecraft, int worldX, int worldZ) {
-		LavaTile lava = lavaTile(minecraft.getResourceManager(), LAVA_SPRITE);
-		if (lava == null || lava.size() <= 0) {
+	int lavaColor(Minecraft minecraft) {
+		int average = averageColor(minecraft.getResourceManager(), LAVA_SPRITE, true);
+		if (average == FALLBACK) {
 			return colorOf(minecraft, Blocks.LAVA.defaultBlockState());
 		}
-		float u = worldX * LAVA_SAMPLE_STEP + LAVA_WARP * (float) Math.sin(worldZ * LAVA_WARP_FREQ);
-		float v = worldZ * LAVA_SAMPLE_STEP + LAVA_WARP * (float) Math.cos(worldX * LAVA_WARP_FREQ);
-		return liftAboveGlowFloor(bilinear(lava, u, v), lava);
-	}
-
-	/** 在小图上的双线性采样；横竖都按小图边长回绕（小图首尾相接）。 */
-	private static int bilinear(LavaTile lava, float u, float v) {
-		int size = lava.size();
-		u -= (float) Math.floor(u / size) * size;
-		v -= (float) Math.floor(v / size) * size;
-		int x0 = (int) u;
-		int y0 = (int) v;
-		if (x0 >= size) {
-			x0 = size - 1;
+		// 按最亮通道撑到满值：贴图平均色本身偏暗（实测铺到地图上是 #E08125，而游戏内约 #FF8D22），
+		// 撑满后三通道同比例放大，色相不变、亮度对得上
+		int red = (average >> 16) & 0xFF;
+		int green = (average >> 8) & 0xFF;
+		int blue = average & 0xFF;
+		int value = Math.max(red, Math.max(green, blue));
+		if (value <= 0) {
+			return average;
 		}
-		if (y0 >= size) {
-			y0 = size - 1;
-		}
-		int x1 = x0 + 1 == size ? 0 : x0 + 1;
-		int y1 = y0 + 1 == size ? 0 : y0 + 1;
-		int[] rgb = lava.rgb();
-		int top = mix(rgb[y0 * size + x0], rgb[y0 * size + x1], u - x0);
-		int bottom = mix(rgb[y1 * size + x0], rgb[y1 * size + x1], u - x0);
-		return mix(top, bottom, v - y0) & 0xFFFFFF;
-	}
-
-	/** 两个颜色按 t（0..1）线性混合三个通道。 */
-	private static int mix(int rgbA, int rgbB, float t) {
-		int red = (int) (((rgbA >> 16) & 0xFF) * (1.0F - t) + ((rgbB >> 16) & 0xFF) * t);
-		int green = (int) (((rgbA >> 8) & 0xFF) * (1.0F - t) + ((rgbB >> 8) & 0xFF) * t);
-		int blue = (int) ((rgbA & 0xFF) * (1.0F - t) + (rgbB & 0xFF) * t);
-		return red << 16 | green << 8 | blue;
-	}
-
-	/**
-	 * 把岩浆本色抬到发光下限之上，并让总亮度随贴图本来的明暗浮动。
-	 *
-	 * <p>着色那一步只保证"不低于下限"；只要这里已超过下限就不会再动它，贴图的明暗过渡因此保留。
-	 * 目标总亮度把这张小图的明暗按<b>它自己的 {@code minTotal}~{@code maxTotal}</b> 线性映射到
-	 * [{@link #GLOW_FLOOR_TOTAL}, {@link #GLOW_CEIL_TOTAL}]：最暗的一格落到下限、最亮的一格落到上限，
-	 * 中间的灰度逐个铺开。
-	 *
-	 * <p><b>为什么要按小图自己的范围归一化</b>（以前是拿一个写死的"典型亮度"当基准）：
-	 * 旧写法 {@code 480 + 0.5 × (total - 380)} 里那条 {@code 380} 是贴图的<b>典型</b>亮度，于是
-	 * <b>凡是不亮于典型的像素全被夹到同一个 480</b>——半张贴图糊成一块纯色，整片岩浆看着很单调。
-	 * 归一化之后同样的亮度带里铺开的是完整明暗，观感立刻有层次；而且换资源包也会自适应。
-	 */
-	private static int liftAboveGlowFloor(int rgb, LavaTile lava) {
-		int red = (rgb >> 16) & 0xFF;
-		int green = (rgb >> 8) & 0xFF;
-		int blue = rgb & 0xFF;
-		int total = red + green + blue;
-		if (total <= 0) {
-			return rgb;
-		}
-		int span = lava.maxTotal() - lava.minTotal();
-		double t = span > 0 ? (total - lava.minTotal()) / (double) span : 0.0;
-		t = Math.clamp(t, 0.0, 1.0);
-		int target = (int) Math.round(GLOW_FLOOR_TOTAL + t * (GLOW_CEIL_TOTAL - GLOW_FLOOR_TOTAL));
-		double factor = target / (double) total;
+		double factor = 255.0 / value;
 		return Math.clamp((int) Math.round(red * factor), 0, 255) << 16
 				| Math.clamp((int) Math.round(green * factor), 0, 255) << 8
 				| Math.clamp((int) Math.round(blue * factor), 0, 255);
-	}
-
-	/**
-	 * 读岩浆贴图并做一次"取单帧 + 盒式平均降采样"。
-	 *
-	 * <p>贴图是逐帧竖排的动画贴图，静态地图只需最上面那一帧；把 {@code width×width} 的帧平均成
-	 * {@link #LAVA_TILE_SIZE}×{@link #LAVA_TILE_SIZE} 小图。帧边长不能被小图边长整除时就不降采样
-	 * （小图 = 整帧），照样能跑，只是噪点大一点。
-	 */
-	private LavaTile lavaTile(ResourceManager resources, Identifier spriteId) {
-		LavaTile cached = byPixels.get(spriteId);
-		if (cached != null) {
-			return cached;
-		}
-		Identifier file = spriteId.withPrefix("textures/").withSuffix(".png");
-		Optional<Resource> resource = resources.getResource(file);
-		if (resource.isEmpty()) {
-			return null;
-		}
-		try (InputStream stream = resource.get().open(); NativeImage image = NativeImage.read(stream)) {
-			int frame = Math.min(image.getWidth(), image.getHeight());
-			if (frame <= 0) {
-				return null;
-			}
-			int size = frame % LAVA_TILE_SIZE == 0 ? LAVA_TILE_SIZE : frame;
-			int block = frame / size;
-			int[] rgb = new int[size * size];
-			int minTotal = Integer.MAX_VALUE;
-			int maxTotal = 0;
-			for (int y = 0; y < size; y++) {
-				for (int x = 0; x < size; x++) {
-					long red = 0;
-					long green = 0;
-					long blue = 0;
-					for (int dy = 0; dy < block; dy++) {
-						for (int dx = 0; dx < block; dx++) {
-							int pixel = image.getPixel(x * block + dx, y * block + dy);
-							red += (pixel >> 16) & 0xFF;
-							green += (pixel >> 8) & 0xFF;
-							blue += (pixel & 0xFF);
-						}
-					}
-					int count = block * block;
-					int r = (int) (red / count);
-					int g = (int) (green / count);
-					int b = (int) (blue / count);
-					rgb[y * size + x] = r << 16 | g << 8 | b;
-					// 记下这张小图自己的明暗范围，供 liftAboveGlowFloor 归一化（见那里的说明）
-					int total = r + g + b;
-					minTotal = Math.min(minTotal, total);
-					maxTotal = Math.max(maxTotal, total);
-				}
-			}
-			LavaTile loaded = new LavaTile(rgb, size, minTotal, maxTotal);
-			byPixels.put(spriteId, loaded);
-			return loaded;
-		} catch (IOException | RuntimeException e) {
-			LOGGER.debug("读取方块贴图 {} 失败", file, e);
-			return null;
-		}
 	}
 
 	private int averageColor(ResourceManager resources, Identifier spriteId, boolean emissive) {

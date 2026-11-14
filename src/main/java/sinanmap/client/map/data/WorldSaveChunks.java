@@ -1225,6 +1225,8 @@ public final class WorldSaveChunks {
 			record.setColumn(index, rgb, displayY, column.skyLight(), column.blockLight());
 			record.setFlatSheet(index, column.flatSheet());
 			record.setEmissive(index, !column.layered() && column.floorState().getLightEmission() > 0);
+			// 岩浆本色已按最亮通道归一化过，着色时不要再拉亮（否则偏荧光黄），见 ChunkRecord#FLAG_GLOW_NORMALIZED
+			record.setGlowNormalized(index, !column.layered() && column.floorState().is(Blocks.LAVA));
 		}
 		return record;
 	}
@@ -1400,6 +1402,8 @@ public final class WorldSaveChunks {
 		int[] overlayY = new int[ChunkRecord.COLUMNS];
 		// 每列顶面是不是自发光方块（岩浆这类），见 ChunkRecord#FLAG_EMISSIVE
 		boolean[] emissive = new boolean[ChunkRecord.COLUMNS];
+		// 每列顶面是不是岩浆：它的本色已按最亮通道归一化，着色时不再拉亮（见 FLAG_GLOW_NORMALIZED）
+		boolean[] lavaTop = new boolean[ChunkRecord.COLUMNS];
 		// 每列真正要画的那一层：高度与本色
 		int[] bedY = new int[ChunkRecord.COLUMNS];
 		java.util.Arrays.fill(bedY, Integer.MIN_VALUE);
@@ -1476,6 +1480,7 @@ public final class WorldSaveChunks {
 							// 自发光方块在地图上直接给本色，不叠明暗（见 ChunkRecord#FLAG_EMISSIVE）。
 							// 覆盖层（水、冰）不发光，标记在下面的合成里按覆盖层判定
 							emissive[index] = state.getLightEmission() > 0;
+							lavaTop[index] = state.is(Blocks.LAVA);
 							// 光照取地表那一格上方的空气：固体方块自身光照恒为 0，取自己那格会得到 0、
 							// 整块被压到 30% 亮度（实时采样取的是上方一格，两边差三倍多）。
 							// 下标 {@code (y + 1) << 8 | z << 4 | x} 里的 +1 不能漏；
@@ -1556,6 +1561,7 @@ public final class WorldSaveChunks {
 			record.setFlatSheet(index, overlay[index] != null && colors.isWater(overlay[index]));
 			// 同样要与实时采样一致：盖了水或冰的那一列画的不是顶面，也就谈不上自发光
 			record.setEmissive(index, overlay[index] == null && emissive[index]);
+			record.setGlowNormalized(index, overlay[index] == null && lavaTop[index]);
 		}
 		return any ? record : null;
 	}

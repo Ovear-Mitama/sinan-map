@@ -326,13 +326,13 @@ class ChunkRecordTest {
 		ChunkRecord record = goldenRecord();
 
 		int[] day = record.toColors(REFERENCE_Y, 0);
-		assertEquals(-571328612, Arrays.hashCode(day), "正午逐像素结果应与当前实现一致");
-		assertEquals(-8200130, day[1], "普通陆地列");
+		assertEquals(905488936, Arrays.hashCode(day), "正午逐像素结果应与当前实现一致");
+		assertEquals(-8331202, day[1], "普通陆地列");
 		assertEquals(-16572899, day[16], "自发光/普通列逐像素一致");
 		assertEquals(0, day[17], "无数据列全透明（17 % 17 == 0）");
 
-		assertEquals(1759607922, Arrays.hashCode(record.toColors(REFERENCE_Y, 11)), "夜晚逐像素一致");
-		assertEquals(1769520597, Arrays.hashCode(record.toColors(80, 4)), "另一参考高度也一致");
+		assertEquals(-1058541826, Arrays.hashCode(record.toColors(REFERENCE_Y, 11)), "夜晚逐像素一致");
+		assertEquals(845582080, Arrays.hashCode(record.toColors(80, 4)), "另一参考高度也一致");
 	}
 
 	/** 确定性地造一块覆盖各种边界的区块：负高度、超 255 高度、自发光、水、无数据。 */

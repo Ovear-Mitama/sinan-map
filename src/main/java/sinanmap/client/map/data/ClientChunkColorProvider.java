@@ -2147,6 +2147,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				record.setFlatSheet(index, flatSheet);
 				// 岩浆这类自发光方块在地图上直接给本色，不叠明暗，见 ChunkRecord#FLAG_EMISSIVE
 				record.setEmissive(index, state.getLightEmission() > 0);
+				// 岩浆的本色已经按"最亮通道"归一化过（见 BlockTextureColors#lavaColor），着色时不要再拉亮，
+				// 否则色相会被推向荧光黄
+				record.setGlowNormalized(index, state.is(Blocks.LAVA));
 			}
 		}
 		// 光照还没算好的区块要兜底。刚进视距的区块，光照引擎还没跑过，读出来是整块 0：
@@ -2539,6 +2542,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 					level.getBrightness(LightLayer.BLOCK, lightPos));
 			slice.record.setFlatSheet(index, flatSheet);
 			slice.record.setEmissive(index, !layered && state.getLightEmission() > 0);
+			slice.record.setGlowNormalized(index, !layered && state.is(Blocks.LAVA));
 			setValidity(slice, index, floor + 1 - CAVE_TOLERANCE,
 					Math.max(ceiling, pocketTop) - CAVE_TOLERANCE);
 			return;
@@ -2647,10 +2651,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	 */
 	private int baseColorOf(BlockAndTintGetter level, BlockColors blockColors, BlockState state, BlockPos pos,
 			boolean emissive) {
-		// 岩浆按方块坐标从贴图里取像素：整片岩浆湖取平均色会变成一块死板的纯色，
-		// 见 BlockTextureColors#lavaColor
+		// 岩浆整片用贴图的平均色（见 BlockTextureColors#lavaColor），不再按坐标采样出斑块
 		if (state.is(Blocks.LAVA)) {
-			return textureColors.lavaColor(minecraft, pos.getX(), pos.getZ());
+			return textureColors.lavaColor(minecraft);
 		}
 		int base = emissive ? textureColors.colorOf(minecraft, state) : textureColors.coveredColorOf(minecraft, state);
 		// 花与花簇在图上只占一格，贴图平均色会把花瓣和绿茎混成暗哑的橄榄色，铺在草色底子上
