@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
@@ -194,6 +195,22 @@ public final class WorldSaveChunks {
 	}
 
 	/**
+	 * 指定维度的区域文件在不在。
+	 *
+	 * <p>世界地图切到别的维度时也要能读那片地形：存档里每个维度都有自己的 region 目录，
+	 * 按"正在查看的维度"问就有数据（联机时整个存档都拿不到，仍然是 null）。
+	 */
+	public static boolean hasRegion(Minecraft minecraft, String dimension, int chunkX, int chunkZ) {
+		Path region = regionFile(minecraft, dimension, chunkX, chunkZ);
+		return region != null && regionExists(region);
+	}
+
+	/** 这个维度在存档里有没有 region 目录（世界地图列出可切换维度时用）。 */
+	public static boolean hasRegionDirectory(Minecraft minecraft, String dimension) {
+		return regionDirectory(minecraft, dimension) != null;
+	}
+
+	/**
 	 * 后台读一次区块的结果。
 	 *
 	 * @param tag        读到的原始 NBT；读不到时为 null
@@ -314,7 +331,12 @@ public final class WorldSaveChunks {
 		if (level == null) {
 			return null;
 		}
-		Holder<Biome> biome = biomeAt(minecraft, level, blockX, blockY, blockZ);
+		return biomeIdAt(minecraft, level.dimension().identifier().toString(), blockX, blockY, blockZ);
+	}
+
+	/** 指定维度某一格的群系 id；读不到时返回 null。世界地图看别的维度时用这一条。 */
+	public static String biomeIdAt(Minecraft minecraft, String dimension, int blockX, int blockY, int blockZ) {
+		Holder<Biome> biome = biomeAt(minecraft, minecraft.level, dimension, blockX, blockY, blockZ);
 		return biome == null ? null
 				: biome.unwrapKey().map(holder -> holder.identifier().toString()).orElse(null);
 	}
@@ -325,10 +347,14 @@ public final class WorldSaveChunks {
 	 * <p>给地图取色用（{@code WorldBiomeTints}）：未加载的区块没有客户端群系，但又必须按真实群系染色，
 	 * 才能与走近之后看到的颜色一致。缓存与 {@link #biomeIdAt} 共用。
 	 *
+	 * <p>{@code dimension} 是"去哪个维度读"：玩家所在维度与"世界地图正在看的那个维度"都可能不是同一个。
+	 *
 	 * <p><b>只在渲染线程调用</b>：缓存本身不是并发容器（{@link #biomeIdAt} 也是渲染线程上的悬停提示）。
 	 */
-	static Holder<Biome> biomeAt(Minecraft minecraft, ClientLevel level, int blockX, int blockY, int blockZ) {
-		PalettedContainerRO<Holder<Biome>> section = biomeSection(minecraft, level,
+	static Holder<Biome> biomeAt(Minecraft minecraft, ClientLevel level, String dimension,
+			int blockX, int blockY, int blockZ) {
+		ensureBiomeDimension(dimension);
+		PalettedContainerRO<Holder<Biome>> section = biomeSection(minecraft, level, dimension,
 				blockX >> 4, blockZ >> 4, blockY >> 4);
 		if (section == null) {
 			return null;
@@ -341,6 +367,17 @@ public final class WorldSaveChunks {
 		return section.get((blockX & 15) >> 2, (blockY & 15) >> 2, (blockZ & 15) >> 2);
 	}
 
+	/** 群系节缓存只按"区块 + 节"作键：换了维度（或换世界）先整体作废，否则会读到另一个维度的群系。 */
+	private static void ensureBiomeDimension(String dimension) {
+		if (dimension.equals(biomeDimension)) {
+			return;
+		}
+		biomeDimension = dimension;
+		BIOME_SECTIONS.clear();
+		lastBiomeKey = Long.MIN_VALUE;
+		lastBiomeSection = null;
+	}
+
 	/**
 	 * 取某一节的群系容器，按"区块 + 节"缓存。
 	 *
@@ -348,14 +385,14 @@ public final class WorldSaveChunks {
 	 * 有它就不必每次都进 LRU 表。读不到（还没有/还没生成）时不记，留着下次再问。
 	 */
 	private static PalettedContainerRO<Holder<Biome>> biomeSection(Minecraft minecraft, ClientLevel level,
-			int chunkX, int chunkZ, int sectionY) {
+			String dimension, int chunkX, int chunkZ, int sectionY) {
 		long key = biomeSectionKey(chunkX, chunkZ, sectionY);
 		if (key == lastBiomeKey && lastBiomeSection != null) {
 			return lastBiomeSection;
 		}
 		PalettedContainerRO<Holder<Biome>> section = BIOME_SECTIONS.get(key);
 		if (section == null) {
-			section = readBiomeSection(minecraft, level, chunkX, chunkZ, sectionY);
+			section = readBiomeSection(minecraft, level, dimension, chunkX, chunkZ, sectionY);
 			if (section == null) {
 				return null;
 			}
@@ -379,10 +416,11 @@ public final class WorldSaveChunks {
 	 *
 	 * <p>只在渲染线程调用（{@link #BIOME_SECTIONS} 不是并发容器）。
 	 */
-	static void rememberBiomeSections(CompoundTag chunk, int chunkX, int chunkZ, ClientLevel level) {
+	static void rememberBiomeSections(CompoundTag chunk, int chunkX, int chunkZ, ClientLevel level, String dimension) {
 		if (level == null) {
 			return;
 		}
+		ensureBiomeDimension(dimension);
 		Codec<PalettedContainerRO<Holder<Biome>>> codec = biomeCodec(level);
 		if (codec == null) {
 			return;
@@ -400,11 +438,13 @@ public final class WorldSaveChunks {
 
 	private static long lastBiomeKey = Long.MIN_VALUE;
 	private static PalettedContainerRO<Holder<Biome>> lastBiomeSection;
+	/** 当前群系节缓存是按哪个维度读出来的，见 {@link #ensureBiomeDimension}。 */
+	private static String biomeDimension;
 
 	/** 解析某一节里的群系调色板数据；拿不到就返回 null。 */
 	private static PalettedContainerRO<Holder<Biome>> readBiomeSection(
-			Minecraft minecraft, ClientLevel level, int chunkX, int chunkZ, int sectionY) {
-		Path region = regionFile(minecraft, chunkX, chunkZ);
+			Minecraft minecraft, ClientLevel level, String dimension, int chunkX, int chunkZ, int sectionY) {
+		Path region = regionFile(minecraft, dimension, chunkX, chunkZ);
 		if (region == null) {
 			return null;
 		}
@@ -458,7 +498,21 @@ public final class WorldSaveChunks {
 	 * 会卡在一丛草里；前者是"真正挡路的那一格"，加一正好站上去。
 	 */
 	public static int surfaceHeightAt(Minecraft minecraft, int blockX, int blockZ) {
-		int[] heights = heightsOf(minecraft, blockX >> 4, blockZ >> 4);
+		ClientLevel level = minecraft.level;
+		if (level == null) {
+			return NO_HEIGHT;
+		}
+		return surfaceHeightAt(minecraft, level.dimension().identifier().toString(), blockX, blockZ);
+	}
+
+	/**
+	 * 指定维度的地表高度。
+	 *
+	 * <p>世界地图看别的维度时用它：那一维度的高度图在它自己的 region 文件里，按玩家所在维度问会读到
+	 * 另一个世界的高度（"光标处的 Y 串了"）。
+	 */
+	public static int surfaceHeightAt(Minecraft minecraft, String dimension, int blockX, int blockZ) {
+		int[] heights = heightsOf(minecraft, dimension, blockX >> 4, blockZ >> 4);
 		if (heights == null) {
 			return NO_HEIGHT;
 		}
@@ -466,17 +520,18 @@ public final class WorldSaveChunks {
 	}
 
 	/** 取（并缓存）某个区块整块的高度图；读不到时返回 null。 */
-	private static int[] heightsOf(Minecraft minecraft, int chunkX, int chunkZ) {
+	private static int[] heightsOf(Minecraft minecraft, String dimension, int chunkX, int chunkZ) {
 		ClientLevel level = minecraft.level;
 		if (level == null) {
 			return null;
 		}
+		ensureHeightDimension(dimension);
 		long key = (long) chunkX << 32 | chunkZ & 0xFFFFFFFFL;
 		int[] cached = HEIGHT_CACHE.get(key);
 		if (cached != null) {
 			return cached;
 		}
-		Path region = regionFile(minecraft, chunkX, chunkZ);
+		Path region = regionFile(minecraft, dimension, chunkX, chunkZ);
 		CompoundTag chunk = region == null ? null : readChunkNbt(region, chunkX, chunkZ);
 		long[] raw = chunk == null ? null
 				// 键名是 Heightmaps（大写 H），原版就是这么写的；写成小写会一直取不到，
@@ -506,6 +561,21 @@ public final class WorldSaveChunks {
 		HEIGHT_CACHE.put(key, heights);
 		return heights;
 	}
+
+	/**
+	 * 高度图缓存只按"区块坐标"作键、不带维度：换了维度先整体作废，
+	 * 否则看主世界时会把下界那边同坐标的高度直接报出来（光标处的 Y 串了）。
+	 */
+	private static void ensureHeightDimension(String dimension) {
+		if (dimension.equals(heightDimension)) {
+			return;
+		}
+		heightDimension = dimension;
+		HEIGHT_CACHE.clear();
+	}
+
+	/** 当前高度图缓存是按哪个维度读出来的，见 {@link #ensureHeightDimension}。 */
+	private static String heightDimension;
 
 	/**
 	 * 这一列给定高度上能不能站人（脚与头两格都不是挡路的方块）。
@@ -616,8 +686,8 @@ public final class WorldSaveChunks {
 	 *
 	 * <p>只在单人/局域网主机上拿得到：世界路径在集成服务端手里，纯客户端连远程服时这里是 null。
 	 *
-	 * <p>结果按关卡实例缓存一次：一屏可以有两千个区块，每次都 {@code Files.isDirectory} 一下就是每帧
-	 * 两千次系统调用。换维度或换存档（见 {@link #worldRoot}）时缓存自然作废。
+	 * <p><b>按维度缓存</b>：地图可以在世界地图界面里"看"另一个维度（玩家还站在原地），那时读的是
+	 * <b>正在查看的那个维度</b>的 region 目录，不能按玩家所在维度拼。结果按维度 id 各缓存一份。
 	 *
 	 * <p><b>"没有"这个结论只信一小会儿。</b>刚进世界时这条路径可能还问不出来（集成服务端还没挂上、
 	 * region 目录还没建），那不是"永远没有"——缓存成 null 的结果到 {@link #REGION_DIR_RETRY_NANOS}
@@ -628,34 +698,48 @@ public final class WorldSaveChunks {
 		if (level == null) {
 			return null;
 		}
+		return regionDirectory(minecraft, level.dimension().identifier().toString());
+	}
+
+	/** 指定维度的 region 目录；拿不到（联机、还没建）时为 null。 */
+	static Path regionDirectory(Minecraft minecraft, String dimension) {
+		ClientLevel level = minecraft.level;
 		long now = System.nanoTime();
-		if (level != regionDirLevel) {
-			// 换了关卡实例（换维度也是换实例）：群系节缓存只按区块坐标作键、不带维度身份，
+		if (level != null && level != regionDirLevel) {
+			// 换了关卡实例（换维度也是换实例）：群系节缓存与目录缓存都只按区块坐标/维度 id 作键，
 			// 留着会让下界/末地读到主世界的群系（取色时整片染错）。只清群系，高度缓存另有它的用途。
 			BIOME_SECTIONS.clear();
 			lastBiomeKey = Long.MIN_VALUE;
 			lastBiomeSection = null;
+			biomeDimension = null;
+			REGION_DIRS.clear();
+			REGION_DIR_CHECKED.clear();
 		}
-		if (level == regionDirLevel
-				&& (regionDir != null || now - regionDirCheckedAt < REGION_DIR_RETRY_NANOS)) {
-			return regionDir;
+		regionDirLevel = level;
+		Path cached = REGION_DIRS.get(dimension);
+		if (cached != null) {
+			return cached;
+		}
+		Long checkedAt = REGION_DIR_CHECKED.get(dimension);
+		if (checkedAt != null && now - checkedAt < REGION_DIR_RETRY_NANOS) {
+			return null;
 		}
 		Path root = worldRoot(minecraft);
 		Path region = null;
 		if (root != null) {
-			String dimension = level.dimension().identifier().toString().replace(':', '/');
-			Path candidate = root.resolve("dimensions").resolve(dimension).resolve("region");
+			Path candidate = root.resolve("dimensions").resolve(dimension.replace(':', '/')).resolve("region");
 			region = Files.isDirectory(candidate) ? candidate : null;
 		}
-		regionDirLevel = level;
-		regionDir = region;
-		regionDirCheckedAt = now;
+		REGION_DIRS.put(dimension, region);
+		REGION_DIR_CHECKED.put(dimension, now);
 		return region;
 	}
 
+	/** 各维度的 region 目录（值为 null 表示"这个维度没有"，按 {@link #REGION_DIR_RETRY_NANOS} 重问）。 */
+	private static final Map<String, Path> REGION_DIRS = new HashMap<>(4);
+	private static final Map<String, Long> REGION_DIR_CHECKED = new HashMap<>(4);
+
 	private static ClientLevel regionDirLevel;
-	private static Path regionDir;
-	private static long regionDirCheckedAt;
 
 	/** "这个维度没有 region 目录"这个结论多久重问一次。 */
 	private static final long REGION_DIR_RETRY_NANOS = 2_000_000_000L;
@@ -668,6 +752,12 @@ public final class WorldSaveChunks {
 	/** 某个区块落在哪个区域文件上；拿不到存档路径时为 null。 */
 	private static Path regionFile(Minecraft minecraft, int chunkX, int chunkZ) {
 		Path regionDir = regionDirectory(minecraft);
+		return regionDir == null ? null : regionFileIn(regionDir, chunkX, chunkZ);
+	}
+
+	/** 指定维度的区域文件；维度没有 region 目录时为 null。 */
+	static Path regionFile(Minecraft minecraft, String dimension, int chunkX, int chunkZ) {
+		Path regionDir = regionDirectory(minecraft, dimension);
 		return regionDir == null ? null : regionFileIn(regionDir, chunkX, chunkZ);
 	}
 
@@ -687,7 +777,8 @@ public final class WorldSaveChunks {
 			cachedRoot = null;
 			// region 目录是跟着根目录算出来的，根目录重来了它也得重算
 			regionDirLevel = null;
-			regionDir = null;
+			REGION_DIRS.clear();
+			REGION_DIR_CHECKED.clear();
 			pathReported = false;
 			attempts = 0;
 			hits = 0;
@@ -698,8 +789,10 @@ public final class WorldSaveChunks {
 			BIOME_SECTIONS.clear();
 			lastBiomeKey = Long.MIN_VALUE;
 			lastBiomeSection = null;
+			biomeDimension = null;
 			// 高度图同理：它也按区块坐标作键、不带世界标识
 			HEIGHT_CACHE.clear();
+			heightDimension = null;
 			if (server != null) {
 				try {
 					cachedRoot = server.getWorldPath(LevelResource.ROOT);

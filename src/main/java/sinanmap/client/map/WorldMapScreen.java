@@ -2610,7 +2610,10 @@ public final class WorldMapScreen extends Screen {
 				}
 			}
 		}
-		return false;
+		// 自己没存过也不代表没有：单人/局域网主机的世界存档里本来就有那个维度的地形，
+		// 切维度后按"正在看的维度"读（见 ClientChunkColorProvider#dataDimension）。
+		// 一页恰好对应一个区域文件，问一次页首区块就够
+		return WorldSaveChunks.hasRegion(Minecraft.getInstance(), currentDimension(), baseX, baseZ);
 	}
 
 	/**
@@ -3333,9 +3336,13 @@ public final class WorldMapScreen extends Screen {
 	 *
 	 * <p>两条来源与地形对应：已加载的区块直接问客户端（最准、不碰磁盘），没加载的远处去世界存档里读。
 	 */
-	private static String biomeNameAt(double worldX, double worldZ, int surfaceY) {
+	private String biomeNameAt(double worldX, double worldZ, int surfaceY) {
 		ClientLevel level = Minecraft.getInstance().level;
 		if (level == null) {
+			return "";
+		}
+		String dimension = currentDimension();
+		if (dimension.isEmpty()) {
 			return "";
 		}
 		int blockX = (int) Math.floor(worldX);
@@ -3344,11 +3351,14 @@ public final class WorldMapScreen extends Screen {
 		int y = surfaceY == NO_SURFACE ? 64 : surfaceY;
 		// 门槛放到 BIOMES：群系在这一步就写好，FEATURES/FULL 还要再等好几步；用 FULL 的话加载范围最外
 		// 那一圈"有地形色但没有群系"
-		if (level.getChunkSource().getChunk(blockX >> 4, blockZ >> 4, ChunkStatus.BIOMES, false) != null) {
+		// 只有"看的正是玩家所在维度"才能问客户端；看别的维度时同坐标是另一个世界，问出来是错的
+		boolean playerDimension = dimension.equals(level.dimension().identifier().toString());
+		if (playerDimension
+				&& level.getChunkSource().getChunk(blockX >> 4, blockZ >> 4, ChunkStatus.BIOMES, false) != null) {
 			return biomeDisplay(level.getBiome(new BlockPos(blockX, y, blockZ)).unwrapKey()
 					.map(key -> key.identifier().toString()).orElse(null));
 		}
-		return biomeDisplay(WorldSaveChunks.biomeIdAt(Minecraft.getInstance(), blockX, y, blockZ));
+		return biomeDisplay(WorldSaveChunks.biomeIdAt(Minecraft.getInstance(), dimension, blockX, y, blockZ));
 	}
 
 	/** 群系 id（{@code minecraft:plains}）→ 本地化的显示名。 */
@@ -3377,9 +3387,14 @@ public final class WorldMapScreen extends Screen {
 		}
 		int blockX = (int) Math.floor(worldX);
 		int blockZ = (int) Math.floor(worldZ);
+		String dimension = currentDimension();
+		// 客户端高度图只对<b>玩家所在维度</b>有意义：看别的维度时同坐标的已加载区块属于另一个世界，
+		// 拿它算 Y 就是"把下界的高度读到主世界"，光标处的 Y / 新建路径点的高度全会串
+		boolean playerDimension = dimension.equals(level.dimension().identifier().toString());
 		// 两边都取 MOTION_BLOCKING、都给"第一格空气"（站上去时脚所在的 Y），否则同一条路径点从客户端问
 		// 和从存档问会差一格
-		if (level.getChunkSource().getChunk(blockX >> 4, blockZ >> 4, ChunkStatus.FULL, false) != null) {
+		if (playerDimension
+				&& level.getChunkSource().getChunk(blockX >> 4, blockZ >> 4, ChunkStatus.FULL, false) != null) {
 			return level.getHeight(Heightmap.Types.MOTION_BLOCKING, blockX, blockZ);
 		}
 		int cached = colorProvider.cachedSurfaceHeight(
@@ -3387,7 +3402,7 @@ public final class WorldMapScreen extends Screen {
 		if (cached != ClientChunkColorProvider.NO_HEIGHT) {
 			return cached;
 		}
-		int fromSave = WorldSaveChunks.surfaceHeightAt(Minecraft.getInstance(), blockX, blockZ);
+		int fromSave = WorldSaveChunks.surfaceHeightAt(Minecraft.getInstance(), dimension, blockX, blockZ);
 		return fromSave == WorldSaveChunks.NO_HEIGHT ? NO_SURFACE : fromSave;
 	}
 
@@ -4086,7 +4101,10 @@ public final class WorldMapScreen extends Screen {
 		List<String> result = new ArrayList<>();
 		for (ResourceKey<Level> key : connection.levels()) {
 			String dimension = key.identifier().toString();
-			if (dimension.equals(current) || hasMapData(root, dimension)) {
+			// "去过"有两种痕迹：本地存过地图数据，或者单人/局域网主机的世界存档里有这个维度的 region。
+			// 只看前者的话，刚清过缓存（或换了数据格式版本）的世界会连主世界都列不出来——切过去一片黑
+			if (dimension.equals(current) || hasMapData(root, dimension)
+					|| WorldSaveChunks.hasRegionDirectory(minecraft, dimension)) {
 				result.add(dimension);
 			}
 		}
@@ -4295,6 +4313,11 @@ public final class WorldMapScreen extends Screen {
 		coarseNoDataClearedNanos = 0L;
 		lastLayer = Integer.MAX_VALUE;
 		centerAnimActive = false;
+		// 光标那几行（Y / 群系）是按"方块 + 层"缓存的：不一起作废，切完维度光标不动时还会显示
+		// 上一个维度的 Y 与群系（"数据串了"）
+		cursorCacheBlockX = Integer.MIN_VALUE;
+		cursorCacheBlockZ = Integer.MIN_VALUE;
+		cursorCacheLayer = Integer.MIN_VALUE;
 		viewCenterOn(x, z);
 		closePopups();
 		LOGGER.info("地图显示维度切换 | {} → {} | 视图中心 {} , {}", from, dimension,

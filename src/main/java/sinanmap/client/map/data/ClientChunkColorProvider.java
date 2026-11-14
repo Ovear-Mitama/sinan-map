@@ -586,8 +586,26 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			return;
 		}
 		viewDimension = normalized;
+		// 群系取色也要跟着换：看别的维度时一律按那个维度的世界存档读，不能问玩家所在关卡的群系
+		ClientLevel level = minecraft.level;
+		String playerDimension = level == null ? null : level.dimension().identifier().toString();
+		biomeTints.setDimension(
+				normalized == null || normalized.equals(playerDimension) ? null : normalized);
 		// 缓存只按区块坐标 + 层作键，不带维度：不在这里作废，切过去看到的还是上一个维度的地形
 		dropDimensionCaches();
+	}
+
+	/**
+	 * 取数据时"算哪个维度"：看别的维度时是正在查看的那个，否则是玩家所在的维度。
+	 *
+	 * <p>世界存档、群系、区域文件存在性全部按它拼路径——否则切过去读到的还是玩家当前维度的地形。
+	 */
+	private String dataDimension() {
+		if (viewDimension != null) {
+			return viewDimension;
+		}
+		ClientLevel level = minecraft.level;
+		return level == null ? null : level.dimension().identifier().toString();
 	}
 
 	/**
@@ -868,9 +886,10 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		if (storage == null || !storage.isKnownAbsent(chunkX, chunkZ, LayerSelector.storageLayer(layer))) {
 			return false;
 		}
-		// 看的是别的维度：世界存档那条路取的是玩家<b>当前</b>维度的区域文件，与正在看的维度坐标对不上，
-		// 问它会得出错误结论——所以只能以"自己这份存档里确实没写过"为准
-		return foreignView() || !WorldSaveChunks.hasRegion(minecraft, chunkX, chunkZ);
+		// 世界存档按"正在查看的维度"问：切到主世界时读的就是主世界的 region，而不是玩家当前维度的。
+		// 联机拿不到存档（dimension 为 null）时仍然只能以"自己这份存档里确实没写过"为准
+		String dimension = dataDimension();
+		return dimension == null || !WorldSaveChunks.hasRegion(minecraft, dimension, chunkX, chunkZ);
 	}
 
 	/** 缓存里没有这一列的高度。 */
@@ -958,11 +977,14 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			// 永远画不出来，那一圈的形状正好是加载范围的形状（看着就是一圈锯齿），外面则是一片
 			// 半透明黑。现在只有"世界存档里连这块的区域文件都没有"才算真的没有。
 			//
-			// 看的是别的维度时只能读自己存过的那份：世界存档那条路取的是玩家<b>当前</b>维度的
-			// 区域文件，解回来是另一个维度的地形，会直接画错
+			// 看的是别的维度时，世界存档问的是<b>正在查看的那个维度</b>（见 #dataDimension），
+			// 不是玩家当前维度的区域文件——因此"自己没写过"绝不能直接把这条路挡掉，
+			// 否则切过去一页都不建（只有转圈、什么都不画）。
 			boolean foreign = foreignView();
+			String regionDimension = dataDimension();
 			if (storage != null && storage.isKnownAbsent(chunkX, chunkZ, storageKey)
-					&& (foreign || !WorldSaveChunks.hasRegion(minecraft, chunkX, chunkZ))) {
+					&& (regionDimension == null
+							|| !WorldSaveChunks.hasRegion(minecraft, regionDimension, chunkX, chunkZ))) {
 				return null;
 			}
 			if (sliceSpent()) {
@@ -970,13 +992,18 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				return null;
 			}
 			// 磁盘那份也按归档层存/查（见上面落盘那段的说明），自己写过的东西才能查回来
-			long key = ChunkColorCache.key(chunkX, chunkZ, storageKey);
 			if (foreign) {
-				// 看的是别的维度：只能读自己存过的那份，而且当场读。这条路既不走世界存档预读
-				// （那取的是玩家所在维度，解回来是错的），也不宜为一屏每块都排一次后台任务；
-				// 切维度是手动、偶尔的动作，这一点同步开销无所谓（用户反馈那边也确实要能立刻看到）
-				return loadOwnCache(chunkX, chunkZ, storageKey);
+				// 看的是别的维度：先读自己存过的那份（当场读，切过去要能立刻看到）；
+				// 自己没存过也没有关系——单人/局域网主机的世界存档里就有那个维度的地形，
+				// 同样交给后台按"正在查看的维度"去读（见 #enqueuePrefetch 与 #dataDimension）。
+				int[] own = loadOwnCache(chunkX, chunkZ, storageKey);
+				if (own != null) {
+					return own;
+				}
+				enqueuePrefetch(chunkX, chunkZ, storageKey);
+				return null;
 			}
+			long key = ChunkColorCache.key(chunkX, chunkZ, storageKey);
 			if (prefetchMissing.contains(key)) {
 				// 两边都找过、确实没有这一块：别再排了
 				return null;
@@ -1649,7 +1676,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			}
 			prefetchUnready.remove(key);
 		}
-		Path regionDir = WorldSaveChunks.regionDirectory(minecraft);
+		// 路径按"正在查看的维度"拼：世界地图切到主世界时读的就是主世界的 region，不是玩家所在维度的
+		String dimension = dataDimension();
+		Path regionDir = dimension == null ? null : WorldSaveChunks.regionDirectory(minecraft, dimension);
 		Path region = regionDir == null ? null : WorldSaveChunks.regionFileIn(regionDir, chunkX, chunkZ);
 		WorldSaveChunks.reportPath(region);
 		// 拿不到世界存档（纯客户端连远程服）不代表没得读：自己存档里可能就存过这一块，
@@ -1762,8 +1791,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				continue;
 			}
 			// 这一块的 NBT 已经在手上：先把群系节记进缓存，着色（makeRecord / makeCaveRecord）
-			// 就不必为同一块再把区域文件读一遍
-			WorldSaveChunks.rememberBiomeSections(done.read().tag(), done.chunkX(), done.chunkZ(), minecraft.level);
+			// 就不必为同一块再把区域文件读一遍。维度按"正在查看的维度"（任务在换维度后已按计数丢弃）
+			WorldSaveChunks.rememberBiomeSections(done.read().tag(), done.chunkX(), done.chunkZ(),
+					minecraft.level, dataDimension());
 			if (LayerSelector.isCave(done.layer())) {
 				if (caveBatch.size() < MAX_CAVE_SCAN_PER_PUMP) {
 					// 洞穴："选列"要按列扫区块 NBT，是纯计算，交给并行池去做（着色在 applyCaveBatch 里）
@@ -1849,14 +1879,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			prefetchMissing.add(done.key());
 			return;
 		}
-		// 看的是别的维度：这一份是玩家所在维度的世界存档解出来的，既不能进缓存（同坐标是另一个
-		// 维度的方块，画上去就是错的），更不能落盘（会往没去过的维度目录里写字）。整个丢掉。
-		if (foreignView()) {
-			logBlockedForeignWrite();
-			return;
-		}
-		// 落盘也按归档层（done.layer() 就是排队时用的归档层），与实时采样那条路同一个键
-		// （见 #loadOwnCache）
+		// 看的是别的维度时，这一份是"正在查看的那个维度"的世界存档解出来的（见 #enqueuePrefetch
+		// 里的 dataDimension），因此可以进内存缓存、也可以让界面补画；但**不落盘**（见 #persist：
+		// 换维度期间万一还有旧维度的任务回来，写下去就是串数据；切维度是偶尔的动作，重读一次无所谓）
 		persist(done.chunkX(), done.chunkZ(), done.layer(), record);
 		rememberSurfaceSample(done.chunkX(), done.chunkZ(), done.layer(), record);
 		// 这一块以前在瓦片上是"未探明"（当时还没落盘/区块还没加载），现在有数据了，

@@ -9,10 +9,12 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.util.ARGB;
 import net.minecraft.world.level.CardinalLighting;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -49,6 +51,10 @@ import org.jetbrains.annotations.Nullable;
  * {@code getBlockTint}（含它自己的 {@code BlockTintCache}），近处因此与以前逐像素相同；只有碰到了
  * 未加载区块（加载范围的边缘）才走这一层的混合——边缘不会再混进"平原"的绿色。
  *
+ * <p><b>看别的维度时（世界地图切维度）</b>：玩家关卡里同坐标的方块属于玩家所在的世界，一个群系都
+ * 不能拿来用；这时由 {@link #setDimension} 指定"正在查看的维度"，全部按那个维度的世界存档读
+ * （联机拿不到存档时按平原，与大改之前一致）。
+ *
  * <p><b>线程与缓存</b>：只在渲染线程使用。每个 {@link ColorResolver} 一份 {@code BlockTintCache}，
  * 换世界时按关卡实例整体作废；区块加载/卸载时由 {@code ClientChunkEvents} 调
  * {@link #invalidate}（与 {@code ClientLevel#onChunkLoaded} 对原版缓存的作废一致）。
@@ -69,12 +75,31 @@ final class WorldBiomeTints implements BlockAndTintGetter {
 	@Nullable
 	private ClientLevel level;
 
+	/**
+	 * 取色"按哪个维度"取群系：{@code null} 表示玩家所在维度（走正规的实时/邻域逻辑）；
+	 * 非空表示世界地图正在看<b>另一个维度</b>——那时玩家关卡的同坐标方块属于另一个世界，
+	 * 一个群系都不能从关卡问，必须全部按这个维度的世界存档读。
+	 */
+	@Nullable
+	private String dimension;
+
 	WorldBiomeTints(Minecraft minecraft) {
 		this.minecraft = minecraft;
 	}
 
+	/** 世界地图切换显示维度时调用；{@code null} = 跟回玩家所在维度。 */
+	void setDimension(@Nullable String dimension) {
+		if (dimension == null ? this.dimension == null : dimension.equals(this.dimension)) {
+			return;
+		}
+		this.dimension = dimension;
+		// 缓存里的颜色是按旧维度算的，全部作废
+		this.caches.clear();
+	}
+
 	/**
 	 * 见类注释：已加载区块走原版，碰到未加载区块就用"关卡 + 世界存档"拼出来的群系按原版公式混合。
+	 * 看别的维度时不能碰玩家关卡，一律按那个维度的世界存档算。
 	 */
 	@Override
 	public int getBlockTint(BlockPos pos, ColorResolver resolver) {
@@ -83,6 +108,11 @@ final class WorldBiomeTints implements BlockAndTintGetter {
 			return NO_TINT;
 		}
 		bind(level);
+		if (this.dimension != null) {
+			return this.caches.computeIfAbsent(resolver,
+					r -> new BlockTintCache(sample -> computeTint(level, r, sample)))
+					.getColor(pos);
+		}
 		int radius = this.minecraft.options.biomeBlendRadius().get();
 		if (allSamplesLoaded(level, pos, radius)) {
 			// 邻域全在已加载区块里：结果与原版逐像素相同，直接用原版缓存
@@ -145,12 +175,25 @@ final class WorldBiomeTints implements BlockAndTintGetter {
 	 * 留一圈淡淡的绿。存档读不到（联机、或区块还没写盘）时退回关卡，也就是原来的行为。
 	 */
 	private Holder<Biome> biomeAt(ClientLevel level, BlockPos pos) {
+		if (this.dimension != null) {
+			// 看别的维度：玩家关卡的同坐标属于另一个世界，一个群系都不能问；只读这个维度的存档
+			Holder<Biome> saved = WorldSaveChunks.biomeAt(this.minecraft, level, this.dimension,
+					pos.getX(), pos.getY(), pos.getZ());
+			return saved != null ? saved : plains(level);
+		}
 		if (this.minecraft.level != level) {
 			// 关卡正在切换（换维度/退世界）：存档目录是按"当前关卡"的维度拼的，先别读
 			return level.getBiome(pos);
 		}
-		Holder<Biome> saved = WorldSaveChunks.biomeAt(this.minecraft, level, pos.getX(), pos.getY(), pos.getZ());
+		String playerDimension = level.dimension().identifier().toString();
+		Holder<Biome> saved = WorldSaveChunks.biomeAt(this.minecraft, level, playerDimension,
+				pos.getX(), pos.getY(), pos.getZ());
 		return saved != null ? saved : level.getBiome(pos);
+	}
+
+	/** 存档里也没有群系时与原版一致：按平原（只在确实读不到任何真实群系时出现）。 */
+	private static Holder<Biome> plains(ClientLevel level) {
+		return level.registryAccess().lookupOrThrow(Registries.BIOME).getOrThrow(Biomes.PLAINS);
 	}
 
 	/**
