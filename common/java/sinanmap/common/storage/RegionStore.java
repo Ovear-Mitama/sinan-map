@@ -63,8 +63,11 @@ public final class RegionStore implements Closeable {
 	 * <p><b>33 → 34</b>：群系染色改为"未加载区块读世界存档"（{@code WorldBiomeTints}）。旧版本里从世界
 	 * 存档读到的那些区块是按<b>平原</b>染的色，已经烘进落盘的本色里、无法事后重算，只能整版本作废一次；
 	 * 单人/局域网主机的区块会重新从世界存档按真实群系读回来。
+	 *
+	 * <p><b>34 → 35</b>：地板高度改为"跳过天花板"（地狱这类有顶的维度）。旧版本在地狱存的是
+	 * <b>基岩顶</b>那一层的颜色与高度，同样烘进了落盘数据、读出来就是一片平顶，只能整版本作废一次。
 	 */
-	private static final int VERSION = 34;
+	private static final int VERSION = 35;
 
 	/** 索引表在文件里的起点（前面是魔数与版本）。 */
 	private static final int TABLE_OFFSET = 16;

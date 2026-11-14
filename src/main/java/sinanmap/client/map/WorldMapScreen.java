@@ -3388,6 +3388,13 @@ public final class WorldMapScreen extends Screen {
 		int blockX = (int) Math.floor(worldX);
 		int blockZ = (int) Math.floor(worldZ);
 		String dimension = currentDimension();
+		// 天花板维度（地狱这类）：高度图给的是基岩顶，问了只会得到"天花板的高度"。
+		// 这类维度的地形高度只有我们自己采样到的那份（见 terrainTopBelowCeiling）可用。
+		if (colorProvider.viewDimensionHasCeiling()) {
+			int cached = colorProvider.cachedSurfaceHeight(
+					blockX >> 4, blockZ >> 4, blockX & 15, blockZ & 15);
+			return cached != ClientChunkColorProvider.NO_HEIGHT ? cached : NO_SURFACE;
+		}
 		// 客户端高度图只对<b>玩家所在维度</b>有意义：看别的维度时同坐标的已加载区块属于另一个世界，
 		// 拿它算 Y 就是"把下界的高度读到主世界"，光标处的 Y / 新建路径点的高度全会串
 		boolean playerDimension = dimension.equals(level.dimension().identifier().toString());

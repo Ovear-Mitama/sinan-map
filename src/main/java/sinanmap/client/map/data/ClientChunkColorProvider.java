@@ -42,6 +42,7 @@ import org.slf4j.LoggerFactory;
 
 import sinanmap.common.SinanConstants;
 import sinanmap.common.coord.CoordinateSpaces;
+import sinanmap.common.coord.Dimensions;
 import sinanmap.common.hud.MinimapSettings;
 import sinanmap.common.map.CenterOutSweep;
 import sinanmap.common.map.ChunkColorCache;
@@ -1404,6 +1405,12 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		if (player == null || level == null) {
 			return LayerSelector.SURFACE;
 		}
+		// 天花板维度（地狱这类）：地表高度图给的是基岩顶，玩家 Y 永远"低于地表"，自动模式会一直
+		// 判成洞穴、只画一条切面。这类维度的地表本来就跳过了天花板（见 #terrainTopBelowCeiling），
+		// 所以自动模式固定地表；真要看切面时由玩家手动选层。
+		if (mode == LayerMode.AUTO && viewDimensionHasCeiling()) {
+			return LayerSelector.SURFACE;
+		}
 		// 用"不含树叶"的高度图：WORLD_SURFACE 把树冠算进去，站在树下时地表高度会凭空高出一截，
 		// 于是被误判成已进入地下，在树下来回走就会频繁切层
 		int surfaceHeight = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
@@ -1807,7 +1814,8 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			prefetchQueued.remove(done.key());
 			// 收记录这一步只能在渲染线程上做：取方块本色、问生物群系都要碰客户端关卡
 			applyRecord(done, WorldSaveChunks.makeRecord(done.layer(), done.read().tag(),
-					done.chunkX(), done.chunkZ(), this, done.read().lightMissing()));
+					done.chunkX(), done.chunkZ(), this, done.read().lightMissing(),
+					viewDimensionHasCeiling()));
 		}
 		if (!caveBatch.isEmpty()) {
 			applyCaveBatch(caveBatch);
@@ -1950,6 +1958,71 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
+	 * 天花板维度里，这一列的"地形顶"：从高度图给的那一格往下，<b>先穿过最上面的连续实心段（天花板）</b>，
+	 * 再找第一格不是空气、也不是装饰的方块。
+	 *
+	 * <p>为什么需要它：地狱的 {@code WORLD_SURFACE} 高度图给的是基岩顶（Y≈127），照着画就是一张平坦的
+	 * 基岩图；而"玩家 Y 低于地表"的自动判层又必然成立 → 地图永远停在一条洞穴切面上。跳过天花板之后，
+	 * 画出来的是<b>天花板下面那层真正的地形</b>（地狱岩地面、熔岩湖），既连续又不随玩家高度变。
+	 *
+	 * <p>按节跳过整节空气（{@code hasOnlyAir()} 是 O(1)），因此"从 127 一路找到 40"通常只查几个节。
+	 */
+	private int terrainTopBelowCeiling(LevelChunk chunk, ClientLevel level,
+			int worldX, int worldZ, int topY, int minY) {
+		BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+		int y = Math.min(topY, level.getMaxY() - 1);
+		// ① 穿过天花板本身：最上面那一段连续实心
+		while (y > minY) {
+			probe.set(worldX, y, worldZ);
+			BlockState state = chunk != null ? chunk.getBlockState(probe) : level.getBlockState(probe);
+			if (state.isAir()) {
+				break;
+			}
+			y--;
+		}
+		// ② 再从天花板下方往下找第一格真正的地形（整节空气一次跨过）
+		while (y > minY) {
+			LevelChunkSection section = sectionOf(chunk, y);
+			if (section != null && section.hasOnlyAir()) {
+				y = ((y >> 4) << 4) - 1;
+				continue;
+			}
+			probe.set(worldX, y, worldZ);
+			BlockState state = chunk != null ? chunk.getBlockState(probe) : level.getBlockState(probe);
+			if (!state.isAir() && !isSurfaceDecoration(state)) {
+				return y;
+			}
+			y--;
+		}
+		return minY;
+	}
+
+	/**
+	 * 正在看的这个维度是不是"有天窗"的维度（地狱这类）。
+	 *
+	 * <p>它们的共同点是：{@code WORLD_SURFACE} 高度图给出的是<b>天花板</b>而不是地形，所以
+	 * <ul>
+	 *   <li>地表取样要跳过天花板（见 {@link #terrainTopBelowCeiling}）；</li>
+	 *   <li>自动分层的"玩家低于地表 → 洞穴"在这类维度里恒成立，必须关掉，否则永远只画一条切面。</li>
+	 * </ul>
+	 */
+	public boolean viewDimensionHasCeiling() {
+		ClientLevel level = minecraft.level;
+		if (level == null) {
+			return false;
+		}
+		String dimension = dataDimension();
+		if (dimension == null) {
+			return false;
+		}
+		if (dimension.equals(level.dimension().identifier().toString())) {
+			return level.dimensionType().hasCeiling();
+		}
+		// 看别的维度：客户端拿不到那个维度的 DimensionType 时，按原版地狱兜底
+		return Dimensions.NETHER.equals(dimension);
+	}
+
+	/**
 	 * 地表：取地表那一格的颜色。
 	 *
 	 * <p><b>取颜色与算明暗用两张不同的高度图</b>：
@@ -1988,6 +2061,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 这一块里读到的最大的天空光，见方法末尾的兜底
 		int maxSkyLight = 0;
 
+		// 天花板维度：这一块的地表要"跳过天花板"往下找（见 terrainTopBelowCeiling）
+		boolean ceiling = viewDimensionHasCeiling();
+
 		for (int localZ = 0; localZ < SinanConstants.CHUNK_SIZE; localZ++) {
 			for (int localX = 0; localX < SinanConstants.CHUNK_SIZE; localX++) {
 				int worldX = baseX + localX;
@@ -2003,6 +2079,12 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				// 而且 {@code colorY + 1} 落进实心方块里、光照恒为 0，整片远处发暗。
 				// （实测日志：`方块=minecraft:dirt startY=92 colorY=92 本色=#896447 sky=0`。）
 				int startY = level.getHeight(Heightmap.Types.WORLD_SURFACE, worldX, worldZ) - 1;
+				// 天花板维度（地狱这类）：高度图给的是<b>基岩顶</b>，不是地形。先穿过最上面那一段实心，
+				// 再从下面一路找真正的地形顶——否则整张地狱地图就是一片平坦的基岩，或者被自动模式
+				// 判成"一直在地下"、只画玩家附近的一条切面。
+				if (ceiling) {
+					startY = terrainTopBelowCeiling(chunk, level, worldX, worldZ, startY, minY);
+				}
 				int colorY = startY;
 				int index = localZ * SinanConstants.CHUNK_SIZE + localX;
 				pos.set(worldX, Math.max(colorY, minY), worldZ);
