@@ -234,6 +234,24 @@ public final class ChunkRecord {
 	 * <p>洞穴切片每次换层都要重新着色，若每次都新建一个 256 长的数组，一帧就能造出几百个垃圾。
 	 */
 	public int[] toColors(int referenceY, int skyDarken, int[] out) {
+		return toColors(referenceY, skyDarken, out, false);
+	}
+
+	/**
+	 * 同 {@link #toColors(int, int, int[])}，但可以指定"天花板维度"（地狱）：高度项换成覆盖整个维度
+	 * 高度的那一版（见 {@link SurfaceShading#heightFactorCeiling}），否则地狱那张图里高低全被钳成
+	 * 同一个亮度、看不出层次。
+	 */
+	public int[] toColors(int referenceY, int skyDarken, int[] out, boolean ceiling) {
+		return toColors(referenceY, skyDarken, out, ceiling, Integer.MIN_VALUE);
+	}
+
+	/**
+	 * 同 {@link #toColors(int, int, int[], boolean)}，另外可以指定"洞穴切面带顶部"：
+	 * 非 {@link Integer#MIN_VALUE} 时亮度改按"离切面顶多少格"算（见
+	 * {@link SurfaceShading#totalFactorCaveBand}），给天花板维度（地狱）的切面用。
+	 */
+	public int[] toColors(int referenceY, int skyDarken, int[] out, boolean ceiling, int caveBandTop) {
 		int dimmed = (int) Math.round(skyDarken * NIGHT_DARKENING);
 		int size = CHUNK_SIZE;
 		for (int i = 0; i < COLUMNS; i++) {
@@ -252,8 +270,14 @@ public final class ChunkRecord {
 				int columnHeight = height(index);
 				int west = x == 0 ? columnHeight : height(index - 1);
 				int north = z == 0 ? columnHeight : height(index - size);
-				factors[index] = SurfaceShading.totalFactor(columnHeight, referenceY,
-						lightSmooth[index], west, north, isFlatSheet(index));
+				factors[index] = caveBandTop != Integer.MIN_VALUE
+						? SurfaceShading.totalFactorCaveBand(columnHeight, caveBandTop,
+								SurfaceShading.CEILING_CAVE_BAND, west, north)
+						: ceiling
+								? SurfaceShading.totalFactorCeiling(columnHeight,
+										lightSmooth[index], west, north)
+								: SurfaceShading.totalFactor(columnHeight, referenceY,
+										lightSmooth[index], west, north, isFlatSheet(index));
 				// 自发光方块只取"地形起伏"（不含光照），让它也有高低层次，见 SurfaceShading#reliefFactor
 				reliefs[index] = SurfaceShading.reliefFactor(columnHeight, referenceY, west, north);
 			}

@@ -142,9 +142,45 @@ public final class SurfaceShading {
 		return Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR);
 	}
 
+	/**
+	 * 天花板维度（地狱）的洞穴切面亮度：<b>按"离切面顶多少格"决定</b>，不用方块光。
+	 *
+	 * <p>地狱没有天空光，方块光只在熔岩附近才有，按光照着色整片都是黑的，因此改成"切面带里越高越亮"
+	 * （顶部 1.0、底部 0.7），于是同一张图上不同高度的地面彼此分得开，玩家上下移动切层时也能看出变化。
+	 *
+	 * @param height    这一列地面所在高度
+	 * @param bandTop   切面带顶部（玩家头上一格，见 {@code LayerSelector#caveStart}）
+	 * @param bandDepth 切面带深度
+	 */
+	public static double totalFactorCaveBand(int height, int bandTop, int bandDepth,
+			int westHeight, int northHeight) {
+		double span = Math.max(1, bandDepth);
+		double t = Math.clamp((height - (bandTop - span)) / span, 0.0, 1.0);
+		double factor = (CAVE_BAND_DIM + (1.0 - CAVE_BAND_DIM) * t)
+				* slopeFactor(height, westHeight, northHeight);
+		return Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR);
+	}
+
+	/** 洞穴切面带底部相对顶部的亮度比例，见 {@link #totalFactorCaveBand}。 */
+	public static final double CAVE_BAND_DIM = 0.70;
+
+	/** 天花板维度的洞穴切面带深度（格）：地狱的地形起伏大，带太浅会扫不到地板、整片发黑。 */
+	public static final int CEILING_CAVE_BAND = 30;
+
 	/** 按已算好的系数着色，供需要自行调整系数的调用方使用。 */
 	public static int shade(int rgb, double factor) {
 		return scale(rgb, Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR));
+	}
+
+	/**
+	 * 天花板维度（地狱）的高度项参与的三项乘积，见 {@link #heightFactorCeiling}。
+	 *
+	 * <p>光照与坡面两项与主世界完全一致，只把高度项换成"覆盖整个维度高度"的那一版。
+	 */
+	public static double totalFactorCeiling(int height, int light, int westHeight, int northHeight) {
+		double factor = heightFactorCeiling(height) * lightFactor(light)
+				* slopeFactor(height, westHeight, northHeight);
+		return Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR);
 	}
 
 	/**
@@ -193,6 +229,27 @@ public final class SurfaceShading {
 	/** 高度项：相对参考高度越高越亮。 */
 	public static double heightFactor(int height, int referenceY) {
 		return Math.clamp(1.0 + (height - referenceY) * PER_BLOCK, MIN_HEIGHT_FACTOR, MAX_HEIGHT_FACTOR);
+	}
+
+	/**
+	 * 天花板维度（地狱这类）的高度参考高度：取维度高度的中段。
+	 *
+	 * <p>主世界的高度项以海平面 63 为基准、每格 {@value #PER_BLOCK}，上下各十几格就会被钳到
+	 * [{@code MIN_HEIGHT_FACTOR}, {@code MAX_HEIGHT_FACTOR}]——地下几十格全是同一个亮度。
+	 * 地狱的可走范围只有约 30~80，而且全程没有天空光，高度是<b>唯一</b>的层次来源，
+	 * 用主世界那套就等于整张图没有高低变化。
+	 */
+	public static final int CEILING_REFERENCE_Y = 64;
+
+	/** 天花板维度的高度项：每格增益与上下限（覆盖整个可走范围，不提前钳位）。 */
+	public static final double CEILING_PER_BLOCK = 0.0065;
+	public static final double CEILING_MIN_HEIGHT_FACTOR = 0.55;
+	public static final double CEILING_MAX_HEIGHT_FACTOR = 1.12;
+
+	/** 天花板维度的高度项，见 {@link #CEILING_REFERENCE_Y}。 */
+	public static double heightFactorCeiling(int height) {
+		return Math.clamp(1.0 + (height - CEILING_REFERENCE_Y) * CEILING_PER_BLOCK,
+				CEILING_MIN_HEIGHT_FACTOR, CEILING_MAX_HEIGHT_FACTOR);
 	}
 
 	/** 光照项：光照越暗越黑。 */

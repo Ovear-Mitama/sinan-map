@@ -106,6 +106,16 @@ public final class WorldSaveChunks {
 		default boolean shouldIgnore(BlockState state) {
 			return false;
 		}
+
+		/**
+		 * 洞穴切面"从空气往下找地板"的深度（格）。
+		 *
+		 * <p>默认 {@link LayerSelector#CAVE_SCAN_DEPTH}；天花板维度（地狱）的溶洞更空、地板常在 30 格
+		 * 以下，调用方会返回更深的值。实时采样那条路必须用同一个数，否则加载范围两侧会画出不同的图。
+		 */
+		default int caveScanDepth() {
+			return LayerSelector.CAVE_SCAN_DEPTH;
+		}
 	}
 
 	/**
@@ -1063,7 +1073,8 @@ public final class WorldSaveChunks {
 	 */
 	static CaveColumn[] scanCaveColumns(CompoundTag chunk, int chunkX, int chunkZ, int layerY,
 			ColumnShape shape) {
-		LayerWindow window = new LayerWindow(chunk, layerY);
+		int scanDepth = shape.caveScanDepth();
+		LayerWindow window = new LayerWindow(chunk, layerY, scanDepth);
 		CaveColumn[] columns = new CaveColumn[ChunkRecord.COLUMNS];
 		int top = layerY + LayerSelector.CAVE_TOLERANCE;
 		int bottom = layerY - LayerSelector.CAVE_TOLERANCE;
@@ -1107,7 +1118,7 @@ public final class WorldSaveChunks {
 				//   整节同一种非空气且不在地板忽略名单里的方块 → 第一格（也就是本节最高那格）就是地板；
 				//   整节同一种但被忽略（例如整节火把）→ 这 16 格全是 continue，整节跳过。
 				// 其余情况逐格查。下沿仍然是 {@code airY - CAVE_SCAN_DEPTH}，没有动边界。
-				int scanBottom = airY - LayerSelector.CAVE_SCAN_DEPTH;
+				int scanBottom = airY - scanDepth;
 				for (int y = airY - 1; y >= scanBottom; ) {
 					BlockState uniform = window.uniformAt(y);
 					int sectionBottom = Math.max(scanBottom, (y >> 4) << 4);
@@ -1251,8 +1262,8 @@ public final class WorldSaveChunks {
 		private final SectionBlocks[] sections;
 		private final int firstSection;
 
-		LayerWindow(CompoundTag chunk, int layerY) {
-			minY = layerY - LayerSelector.CAVE_TOLERANCE - LayerSelector.CAVE_SCAN_DEPTH;
+		LayerWindow(CompoundTag chunk, int layerY, int scanDepth) {
+			minY = layerY - LayerSelector.CAVE_TOLERANCE - scanDepth;
 			maxY = layerY + LayerSelector.CAVE_TOLERANCE;
 			// 右移 4 位就是它所在的节下标（负数也是向下取整，与 floorDiv 一致）
 			firstSection = minY >> 4;

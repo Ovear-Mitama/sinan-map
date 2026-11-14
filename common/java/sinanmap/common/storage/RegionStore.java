@@ -77,8 +77,11 @@ public final class RegionStore implements Closeable {
 	 *
 	 * <p><b>38 → 39</b>：岩浆平均色按最亮通道撑满（原来偏暗，实测 #E08125 对游戏的 #FF8D22），
 	 * 起伏也压到 [0.96, 1.04]。
+	 *
+	 * <p><b>39 → 40</b>：天花板维度（地狱）的洞穴切面走得更深（24 → 30 格），
+	 * 旧的切面数据是浅扫出来的，只能整版本作废一次。
 	 */
-	private static final int VERSION = 39;
+	private static final int VERSION = 40;
 
 	/** 索引表在文件里的起点（前面是魔数与版本）。 */
 	private static final int TABLE_OFFSET = 16;
