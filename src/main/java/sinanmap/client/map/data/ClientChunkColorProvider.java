@@ -476,13 +476,13 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		}
 
 		/** 取当前档位的颜色，需要就（重新）着色。 */
-		private int[] colors(int skyDarken) {
+		private int[] colors(int skyDarken, int caveBandTop) {
 			if (colors == null) {
 				colors = new int[ChunkRecord.COLUMNS];
 			}
 			if (this.skyDarken != skyDarken) {
 				this.skyDarken = skyDarken;
-				record.toColors(REFERENCE_Y, skyDarken, colors, ceiling);
+				record.toColors(REFERENCE_Y, skyDarken, colors, ceiling, caveBandTop);
 			}
 			return colors;
 		}
@@ -840,8 +840,10 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			CaveSlice slice = caveSlices.getAndMoveToLast((long) chunkX << 32 | chunkZ & 0xFFFFFFFFL);
 			if (slice != null) {
 				if (!slice.pairValid || slice.pairLayer != slice.layer) {
-					slice.record.toColors(REFERENCE_Y, SKY_DARKEN_DAY, slice.dayColors, false, caveBandTop(slice.layer));
-					slice.record.toColors(REFERENCE_Y, SKY_DARKEN_NIGHT, slice.nightColors, false, caveBandTop(slice.layer));
+					slice.record.toColors(REFERENCE_Y, SKY_DARKEN_DAY, slice.dayColors,
+							viewDimensionHasCeiling(), caveShading());
+					slice.record.toColors(REFERENCE_Y, SKY_DARKEN_NIGHT, slice.nightColors,
+							viewDimensionHasCeiling(), caveShading());
 					slice.pairValid = true;
 					slice.pairLayer = slice.layer;
 				}
@@ -855,15 +857,17 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			// 却因为找不到切片而画成未探明——这正是"洞穴模式下别处已加载过的区块不显示"的另一半。
 		}
 		// 按归档层查（见 LayerSelector#storageLayer）：这些数据是后台按归档层存进来的
-		SurfaceSample sample = surfaceSample(chunkX, chunkZ, LayerSelector.storageLayer(layer));
+		int storageKey = LayerSelector.storageLayer(layer);
+		SurfaceSample sample = surfaceSample(chunkX, chunkZ, storageKey);
 		if (sample == null) {
 			return false;
 		}
 		if (sample.dayColors == null) {
+			int band = sampleBand(storageKey);
 			sample.dayColors = new int[ChunkRecord.COLUMNS];
 			sample.nightColors = new int[ChunkRecord.COLUMNS];
-			sample.record.toColors(REFERENCE_Y, SKY_DARKEN_DAY, sample.dayColors, sample.ceiling);
-			sample.record.toColors(REFERENCE_Y, SKY_DARKEN_NIGHT, sample.nightColors, sample.ceiling);
+			sample.record.toColors(REFERENCE_Y, SKY_DARKEN_DAY, sample.dayColors, sample.ceiling, band);
+			sample.record.toColors(REFERENCE_Y, SKY_DARKEN_NIGHT, sample.nightColors, sample.ceiling, band);
 		}
 		System.arraycopy(sample.dayColors, 0, dayOut, 0, length);
 		System.arraycopy(sample.nightColors, 0, nightOut, 0, length);
@@ -973,7 +977,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 所以先找原始数据：找到就（必要时）重新着色，颜色缓存丢了也不必重采世界。
 		SurfaceSample sample = surfaceSample(chunkX, chunkZ, storageKey);
 		if (sample != null) {
-			return sample.colors(passSkyDarken);
+			return sample.colors(passSkyDarken, sampleBand(storageKey));
 		}
 		if (level == null) {
 			return null;
@@ -1039,7 +1043,16 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 
 		ChunkRecord record = sampleSurface(level, chunkX, chunkZ);
 		persist(chunkX, chunkZ, storageKey, record);
-		return rememberSurfaceSample(chunkX, chunkZ, storageKey, record).colors(passSkyDarken);
+		return rememberSurfaceSample(chunkX, chunkZ, storageKey, record)
+				.colors(passSkyDarken, sampleBand(storageKey));
+	}
+
+	/**
+	 * 某一层着色时该用的切面着色参数：洞穴层看 {@link #caveShading}，地表用
+	 * {@link Integer#MIN_VALUE}（不按切面处理）。
+	 */
+	private int sampleBand(int layer) {
+		return LayerSelector.isCave(layer) ? caveShading() : Integer.MIN_VALUE;
 	}
 
 	/**
@@ -1418,27 +1431,51 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 用"不含树叶"的高度图：WORLD_SURFACE 把树冠算进去，站在树下时地表高度会凭空高出一截，
 		// 于是被误判成已进入地下，在树下来回走就会频繁切层
 		// 天花板维度（地狱）同样走这一套：玩家 Y 通常低于基岩顶，AUTO 因而落在洞穴切面，上下移动时
-		// 切层跟着变；只有贴近基岩顶时才改看俯视图（见下面的回退）。切面的亮度由"离切面顶多少格"
-		// 决定，见 SurfaceShading#totalFactorCaveBand。
+		// 切层跟着变；只有贴近基岩顶时才改看俯视图（见下面的回退）。切面按方块光着色，
+		// 见 ChunkRecord#BLOCK_LIGHT_BAND。
 		int surfaceHeight = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
 				player.getBlockX(), player.getBlockZ()) - 1;
 		int caveTop = LayerSelector.caveStart(player.getBlockY());
 		int resolved = LayerSelector.resolve(mode, player.getY(), surfaceHeight, caveTop);
-		// 天花板维度里"贴到顶"的时候不要切面：切面带整个压在基岩顶里，扫出来的是一片空白/碎条。
-		// 这时改看"跳过天花板"的俯视图，画面里是一整片地形，
-		// 正好对应"我快到顶了、往下看"这个位置关系。
-		if (viewDimensionHasCeiling() && LayerSelector.isCave(resolved)) {
+		// 天花板维度里，靠近顶的那一段分两种情况：
+		//   ① 玩家已经进到基岩顶这一层、或站到它上面：这里不能用地表——地表在基岩顶下面，
+		//      画出来是"基岩下的地形"。改用玩家所在高度的切面，切面扫到的地板就是基岩本身；
+		//   ② 还在这层下方、但已经贴得很近：切面窗口会探进基岩顶里，扫出来是一张平坦的基岩图。
+		//      这时改看"跳过天花板"的俯视图。
+		if (mode != LayerMode.SURFACE && viewDimensionHasCeiling()) {
 			int roofY = level.getHeight(Heightmap.Types.WORLD_SURFACE,
 					player.getBlockX(), player.getBlockZ()) - 1;
-			if (player.getBlockY() >= roofY - CEILING_SURFACE_MARGIN) {
+			if (player.getBlockY() >= roofY - CEILING_ROOF_DEPTH) {
+				return caveTop;
+			}
+			if (LayerSelector.isCave(resolved) && player.getBlockY() >= roofY - CEILING_SURFACE_MARGIN) {
 				return LayerSelector.SURFACE;
 			}
 		}
 		return resolved;
 	}
 
-	/** 天花板维度里玩家离顶部多近就改看俯视图（格），见 {@link #wantedLayer}。 */
+	/**
+	 * 基岩顶本身有多厚（格），见 {@link #wantedLayer}。
+	 *
+	 * <p>原版的基岩顶占 123~127 五层、最上面那层总是实心，取 4 即"站到最上面那层就算进了基岩层"。
+	 */
+	private static final int CEILING_ROOF_DEPTH = 4;
+
+	/** 天花板维度里玩家离顶部多近（还没进基岩层时）就改看俯视图（格），见 {@link #wantedLayer}。 */
 	private static final int CEILING_SURFACE_MARGIN = 10;
+
+	/**
+	 * 天花板维度的切面按方块光着色；别的维度沿用原规则。
+	 * 见 {@link ChunkRecord#toColors(int, int, int[], boolean, int)}。
+	 *
+	 * <p><b>为什么不用天空光</b>：地狱这类维度没有天空光，存档里的天空光只是"没有这张数组"时的
+	 * 兜底值，按它算整张图是一片均匀的亮色、完全看不出哪里亮哪里暗。改按方块光后，火把、岩浆、
+	 * 荧石附近亮起来、其余保持暗，明暗层次才和游戏里一致。
+	 */
+	private int caveShading() {
+		return viewDimensionHasCeiling() ? ChunkRecord.BLOCK_LIGHT_BAND : Integer.MIN_VALUE;
+	}
 
 	/**
 	 * 眼睛是不是在水下。
@@ -1629,7 +1666,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			return null;
 		}
 		SurfaceSample sample = rememberSurfaceSample(chunkX, chunkZ, layer, record);
-		return sample.colors(passSkyDarken);
+		return sample.colors(passSkyDarken, sampleBand(layer));
 	}
 
 	/**
@@ -2028,14 +2065,6 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
-	 * 天花板维度的洞穴切面按"离切面顶多少格"着色；别的维度沿用原规则。
-	 * 见 {@link ChunkRecord#toColors(int, int, int[], boolean, int)}。
-	 */
-	private int caveBandTop(int layer) {
-		return viewDimensionHasCeiling() ? layer : Integer.MIN_VALUE;
-	}
-
-	/**
 	 * 正在看的这个维度是不是"有天窗"的维度（地狱这类）。
 	 *
 	 * <p>它们的共同点是：{@code WORLD_SURFACE} 高度图给出的是<b>天花板</b>而不是地形，所以
@@ -2413,7 +2442,8 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		if (rescanned || slice.renderedEpoch != shadeEpoch) {
 			// 只有真的动了原始数据、或光照换了档，才需要重新着色。
 			// 整块都还在适用范围内时颜色逐像素相同，白算一遍等于每走一格都白烧一次全屏重着色
-			slice.record.toColors(REFERENCE_Y, passSkyDarken, slice.colors, false, caveBandTop(slice.layer));
+			slice.record.toColors(REFERENCE_Y, passSkyDarken, slice.colors,
+					viewDimensionHasCeiling(), caveShading());
 			slice.renderedEpoch = shadeEpoch;
 		}
 		if (rescanned) {

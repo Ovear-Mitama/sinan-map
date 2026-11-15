@@ -247,19 +247,44 @@ public final class ChunkRecord {
 	}
 
 	/**
-	 * 同 {@link #toColors(int, int, int[], boolean)}，另外可以指定"洞穴切面带顶部"：
-	 * 非 {@link Integer#MIN_VALUE} 时亮度改按"离切面顶多少格"算（见
-	 * {@link SurfaceShading#totalFactorCaveBand}），给天花板维度（地狱）的切面用。
+	 * "按方块光着色"的切面标记，见 {@code ClientChunkColorProvider#caveBandTop}。
+	 *
+	 * <p>天花板维度（地狱）没有天空光：存档里的天空光只是兜底值，按它算整张图会是一片均匀的亮色，
+	 * 完全看不出哪里亮、哪里暗。这类切面改按方块光算，火把、岩浆、荧石附近亮起来、其余保持暗。
+	 *
+	 * <p>它不是真实高度，只借 {@code caveBandTop} 这个参数把"这一份按方块光着色"传进
+	 * {@link #toColors}；取 {@code MAX_VALUE - 1} 避开"没有特殊要求"的哨兵 {@link Integer#MIN_VALUE}。
+	 */
+	public static final int BLOCK_LIGHT_BAND = Integer.MAX_VALUE - 1;
+
+	/**
+	 * 按方块光着色的切面所用的环境光地板（0~15）。
+	 *
+	 * <p>不给地板的话，远离光源的整片地形（地狱岩）会压到 {@code MIN_LIGHT_FACTOR} 那一档，
+	 * 地形轮廓也一起糊掉。取 3 让暗部仍能读出起伏，而发光方块附近明显更亮，明暗对比就出来了。
+	 */
+	private static final int CAVE_AMBIENT_LIGHT = 3;
+
+	/**
+	 * 同 {@link #toColors(int, int, int[], boolean)}，另外可以指定切面的着色方式：
+	 * {@link #BLOCK_LIGHT_BAND} 表示按方块光着色（天花板维度的切面），
+	 * 其余值表示照常按天空光/方块光计算。
 	 */
 	public int[] toColors(int referenceY, int skyDarken, int[] out, boolean ceiling, int caveBandTop) {
 		int dimmed = (int) Math.round(skyDarken * NIGHT_DARKENING);
 		int size = CHUNK_SIZE;
 		for (int i = 0; i < COLUMNS; i++) {
 			long column = columns[i];
-			int sky = (int) ((column >>> SKY_SHIFT) & NIBBLE_MASK);
 			int block = (int) ((column >>> BLOCK_SHIFT) & NIBBLE_MASK);
-			// 方块光与"天空光减去昼夜衰减"取大，与原版 getRawBrightness 一致
-			lightRaw[i] = Math.max(0, Math.max(block, sky - dimmed));
+			if (caveBandTop == BLOCK_LIGHT_BAND) {
+				// 天花板维度的切面：存档里的天空光只是兜底值，按它算整张图是一片没有明暗的亮色。
+				// 改按方块光，并给一个很低的环境光地板，让暗部仍能读出地形、光源附近明显更亮。
+				lightRaw[i] = Math.max(block, CAVE_AMBIENT_LIGHT);
+			} else {
+				int sky = (int) ((column >>> SKY_SHIFT) & NIBBLE_MASK);
+				// 方块光与"天空光减去昼夜衰减"取大，与原版 getRawBrightness 一致
+				lightRaw[i] = Math.max(0, Math.max(block, sky - dimmed));
+			}
 		}
 		// 光照是 0~15 的整数，不经平滑的话每一级的边界都是一条看得见的硬边
 		SurfaceShading.smoothLight(lightRaw, lightSmooth, size);
@@ -270,14 +295,10 @@ public final class ChunkRecord {
 				int columnHeight = height(index);
 				int west = x == 0 ? columnHeight : height(index - 1);
 				int north = z == 0 ? columnHeight : height(index - size);
-				factors[index] = caveBandTop != Integer.MIN_VALUE
-						? SurfaceShading.totalFactorCaveBand(columnHeight, caveBandTop,
-								SurfaceShading.CEILING_CAVE_BAND, west, north)
-						: ceiling
-								? SurfaceShading.totalFactorCeiling(columnHeight,
-										lightSmooth[index], west, north)
-								: SurfaceShading.totalFactor(columnHeight, referenceY,
-										lightSmooth[index], west, north, isFlatSheet(index));
+				factors[index] = caveBandTop == BLOCK_LIGHT_BAND || ceiling
+						? SurfaceShading.totalFactorCeiling(columnHeight, lightSmooth[index], west, north)
+						: SurfaceShading.totalFactor(columnHeight, referenceY,
+								lightSmooth[index], west, north, isFlatSheet(index));
 				// 自发光方块只取"地形起伏"（不含光照），让它也有高低层次，见 SurfaceShading#reliefFactor
 				reliefs[index] = SurfaceShading.reliefFactor(columnHeight, referenceY, west, north);
 			}

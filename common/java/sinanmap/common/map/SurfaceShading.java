@@ -142,28 +142,6 @@ public final class SurfaceShading {
 		return Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR);
 	}
 
-	/**
-	 * 天花板维度（地狱）的洞穴切面亮度：<b>按"离切面顶多少格"决定</b>，不用方块光。
-	 *
-	 * <p>地狱没有天空光，方块光只在熔岩附近才有，按光照着色整片都是黑的，因此改成"切面带里越高越亮"
-	 * （顶部 1.0、底部 0.7），于是同一张图上不同高度的地面彼此分得开，玩家上下移动切层时也能看出变化。
-	 *
-	 * @param height    这一列地面所在高度
-	 * @param bandTop   切面带顶部（玩家头上一格，见 {@code LayerSelector#caveStart}）
-	 * @param bandDepth 切面带深度
-	 */
-	public static double totalFactorCaveBand(int height, int bandTop, int bandDepth,
-			int westHeight, int northHeight) {
-		double span = Math.max(1, bandDepth);
-		double t = Math.clamp((height - (bandTop - span)) / span, 0.0, 1.0);
-		double factor = (CAVE_BAND_DIM + (1.0 - CAVE_BAND_DIM) * t)
-				* slopeFactor(height, westHeight, northHeight);
-		return Math.clamp(factor, MIN_TOTAL_FACTOR, MAX_TOTAL_FACTOR);
-	}
-
-	/** 洞穴切面带底部相对顶部的亮度比例，见 {@link #totalFactorCaveBand}。 */
-	public static final double CAVE_BAND_DIM = 0.70;
-
 	/** 天花板维度的洞穴切面带深度（格）：地狱的地形起伏大，带太浅会扫不到地板、整片发黑。 */
 	public static final int CEILING_CAVE_BAND = 30;
 
