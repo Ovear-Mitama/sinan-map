@@ -1,99 +1,89 @@
 # Sinan Map（司南地图）
 
-开源地图类 Mod：客户端小地图、全屏地图与路径点系统。
+Minecraft 地图模组：小地图、全屏地图、路径点，以及生物雷达。
 
-Fabric 与 NeoForge 是**两个互不依赖的独立工程**，各自构建、各自发布，不存在跨加载器抽象层。
-与加载器无关的纯逻辑（坐标换算、路径点模型、存储格式等）放在 `lib/`（Sinan Lib，独立的 Gradle 构建与版本号），
-由两个工程共同依赖。`lib/` 里的代码**不允许**引用任何 Minecraft 或加载器类型；
-依赖 Minecraft 的网络协议放在 `shared/`，同样由两端共享编译，用到 Minecraft 的其它代码写在各自的 `src/` 下。
+## 支持的版本
 
-## 环境要求
+| Minecraft | 加载器 | 状态 |
+|---|---|---|
+| 26.1.2 | Fabric / NeoForge | 当前开发版本 |
 
-- JDK 25（编译目标与运行基线；26.1 起 Minecraft 官方基线的 Java 版本）
-- Gradle 由 wrapper 提供（9.7.1），无需本机安装
+Fabric 与 NeoForge 是两个独立工程，各自构建、各自发布，没有跨加载器的抽象层。以后加新版本时在上表补一行即可；具体依赖版本写在根目录和 `neoforge/` 的 `gradle.properties` 里。
 
-Gradle 本身必须用 JDK 25 运行——Loom 1.18.2 会直接拒绝低于 25 的构建 JVM。
-命令行下设置 `JAVA_HOME` 指向 JDK 25，IDE 中把 Gradle JVM 选为 JDK 25 即可。
+## 功能
 
-## 构建与运行
+- 小地图：缩放、锁定正北、地表与洞穴层切换、生物雷达
+- 全屏地图：平移缩放、维度切换、区块网格、史莱姆区块、方位字母
+- 路径点：新建、分组、传送、死亡点记录，传送石碑自动同步；只保存在本机
+- 多人：服务端装了司南时，同意共享位置的玩家可以互相显示在地图上
 
-Fabric（构建根目录即工程目录）：
+默认按键：`M` 世界地图，`U` 路径点管理器，`B` 新建路径点，`=` / `-` 缩放小地图。
+
+## 安装
+
+按对应加载器的常规方式安装：
+
+- Fabric：Fabric Loader + Fabric API
+- NeoForge：NeoForge
+
+需要 Java 25（Minecraft 26.1 起的运行基线）。把 jar 放进 `mods` 目录，不要同时装两个加载器的版本。Fabric 版也可以直接在 Quilt Loader 上运行。
+
+## 构建
+
+需要 JDK 25，Gradle 用仓库自带的 wrapper，本机不用另装。Gradle 本身也必须跑在 JDK 25 上：命令行先设置 `JAVA_HOME`，IDE 里把 Gradle JVM 选成 25。
+
+Fabric（仓库根目录就是 Fabric 工程）：
 
 ```bash
-./gradlew build          # 构建 + 运行单元测试
-./gradlew runClient      # 启动客户端
+./gradlew build
+./gradlew runClient
 ```
 
-Sinan Lib（独立构建，两端构建时会自动先编它）：
+Sinan Lib（核心逻辑，独立构建；两端构建时会自动先编它）：
 
 ```bash
 ./gradlew -p lib build
 ./gradlew -p lib test
 ```
 
-NeoForge（独立工程，用根目录的 wrapper 指定工程目录）：
+NeoForge（独立工程）：
 
 ```bash
 ./gradlew -p neoforge build
 ./gradlew -p neoforge runClient
 ```
 
-## 依赖版本
+Windows 下把 `./gradlew` 换成 `.\gradlew.bat`。
 
-| 组件 | Fabric 工程 | NeoForge 工程 |
-|---|---|---|
-| Minecraft | 26.1.2 | 26.1.2 |
-| 加载器 | Fabric Loader 0.19.5 | NeoForge 26.1.2.109 |
-| 加载器 API | Fabric API 0.155.3+26.1.2 | 随 NeoForge 提供 |
-| 构建插件 | Fabric Loom 1.18.2 | ModDevGradle 2.0.146 |
-| 单元测试 | JUnit 5.14.4 | JUnit 5.14.4 |
+## 目录结构
 
-版本号分别写在根目录与 `neoforge/` 下的 `gradle.properties` 中。
+| 目录 | 内容 |
+|---|---|
+| `lib/` | Sinan Lib：坐标换算、配色、层判定、路径点模型、存储格式。不引用 Minecraft 或加载器类型 |
+| `shared/` | 网络协议。用到 Minecraft 的类型，由两个工程共同编译 |
+| `src/` | Fabric 工程与客户端实现 |
+| `neoforge/` | NeoForge 工程 |
 
-## Quilt 兼容
+`lib/` 有自己的版本号（见 `lib/gradle.properties`），与模组版本分开。打包时它的类会并进模组 jar，玩家仍然只装一个文件。
 
-Fabric 版使用 `fabric.mod.json` 与 Fabric Loader 元数据，可直接在 Quilt Loader 上运行，无需额外适配。
-NeoForge 版与 Quilt 无关，单独分发。
+## 测试
 
-## 单元测试
-
-Sinan Lib 的测试位于 `lib/src/test/java`，用根目录的 wrapper 指定工程目录运行：
+单元测试在 `lib/src/test/java`：
 
 ```bash
-./gradlew -p lib test       # Sinan Lib
-./gradlew test              # Fabric 工程
-./gradlew -p neoforge test  # NeoForge 工程
+./gradlew -p lib test
 ```
 
-当前覆盖坐标换算（方块 / 区块 / 区域）、地图视口换算的往返一致性、路径点模型的不变量与校验。
+目前覆盖坐标换算、地图视口换算、路径点模型、存档格式等纯逻辑；Fabric 与 NeoForge 工程本身没有单独的测试。
 
 ## 许可
 
-本项目采用 **保留所有权利（All Rights Reserved）**：默认不授予任何权利。完整声明与作者额外授予的许可（同在一个文件内）见 [LICENSE](LICENSE)，要点：
+项目保留所有权利，完整条款见 [LICENSE](LICENSE)。可以游玩、备份、原样随整合包分发（含商业整合包和盈利服务器），在服务器、直播、视频里使用并获利；也可以基于公开接口做独立附加组件，许可随意（含闭源、商业），不需要申请。`assets/sinanmap/` 下的美术资源不受限制。
 
-- **允许（无需申请、无需付费）**：游玩与备份；以**未经修改**的形式随整合包分发（**含商业整合包与盈利服务器**）；在服务器、直播、录播、图文等内容创作中使用并获利；开发独立的附加组件（可闭源、可商用）；制作资源包、教程与文档。
-- **需事先取得书面许可**：以本作品**本身为卖点**的商业性使用（例如放在付费墙后提供、把本作品作为商品出售）。
-- **始终禁止**：修改、摘录、改名、重新打包本作品后分发（含"补丁 jar""修改版 jar"）；把源代码或其他资源（美术资源除外）并入自己的项目；抹掉版权/许可/署名声明；冒用官方名义或暗示作者背书。
-- **署名**：**默认不要求署名**——整合包、服务器、视频、图文、附加组件等场合使用或展示本作品均无需注明；唯一的署名要求是"复制、移植或实质性参考了源代码，或作品依赖本作品源码时"，需保留原始版权与许可声明并注明来源。
-- `assets/sinanmap/` 下的贴图与图标素材**不作限制**（可自由使用、修改、再分发，含商业用途）；其中来自 Minecraft 的原始贴图与模型仍归 Mojang 所有。
-- 本项目为独立实现，不包含 JourneyMap、Xaero's Minimap、VoxelMap 等 Mod 的任何代码或资源。
+拿本模组本身卖钱（例如放在付费墙后或作为商品出售）需要事先取得书面许可。修改后分发（补丁 jar、修改版 jar）、把源码或资源并入其他项目、冒充官方都不允许。署名默认不要求；只有复制、移植或实质性参考源码，或者作品依赖本模组源码时，才需要保留声明并注明来源。
 
-## 附加组件许可（Addon Policy）
-
-本模组**鼓励拓展、禁止衍生**，两者的分界线只有一条：
-
-| | 允许（拓展） | 禁止（衍生） |
-|---|---|---|
-| 做法 | 通过本模组的**公开接口**依赖它：公开 API、事件、数据包、资源包、在整合包中直接引用官方 jar | 改动本作品的源码或资源后发布；分发"修改版 jar"或"补丁 jar" |
-| 判据 | **不需要修改本作品**就能实现 | **必须改动本作品**才能成立 |
-| 例子 | 附加组件读取本模组的路径点数据、注册新的图层绘制、用资源包替换素材 | fork 一份改功能再上传、把本模组改名重新打包、把补丁打进 jar 一起分发 |
-
-- 附加组件是**独立作品**，你可以为它选择任何许可（包括闭源、商业许可），无需向本模组申请；
-- 附加组件**不得**复制本作品的源码或资源（`assets/sinanmap/` 下的美术资源除外，那部分不作限制）；
-- 附加组件**不得**使用本模组的名称与图标冒充官方版本；
-- 需要新增公开接口时，欢迎提 issue 讨论——把"需要改源码"的需求变成"通过公开接口就能做"，是这套许可希望推动的方向。
+项目为独立实现，不含 JourneyMap、Xaero's Minimap、VoxelMap 等模组的代码或资源。
 
 ## 参与贡献
 
-报告问题、提建议或提交代码之前，请先读 [CONTRIBUTING.md](CONTRIBUTING.md)（含 issue 要求与 PR 的入站授权说明）。
-
+提问题、建议或代码之前，请先读 [CONTRIBUTING.md](CONTRIBUTING.md)，里面写了 issue 需要的信息和 PR 的入站授权说明。
