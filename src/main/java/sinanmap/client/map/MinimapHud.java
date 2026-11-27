@@ -8,8 +8,6 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.toasts.AdvancementToast;
-import net.minecraft.client.gui.components.toasts.RecipeToast;
 import net.minecraft.client.gui.components.toasts.Toast;
 import net.minecraft.client.gui.components.toasts.ToastManager;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -45,6 +43,7 @@ import sinanmap.client.map.render.MarkerRenderer;
 import sinanmap.client.map.render.TilePage;
 import sinanmap.client.map.render.TileVariants;
 import sinanmap.client.map.render.WorldTilePages;
+import sinanmap.client.mixin.ToastManagerAccessor;
 import sinanmap.client.radar.EntityRadar;
 import sinanmap.client.radar.TrackedPlayers;
 import sinanmap.client.waypoint.WaypointManager;
@@ -641,42 +640,29 @@ public final class MinimapHud {
 	 * 让到较高的那块下沿就够了。
 	 */
 	private static double topRightAvoidance(LocalPlayer player) {
-		return Math.max(potionEffectsShift(player), advancementToastShift());
+		return Math.max(potionEffectsShift(player), toastShift());
 	}
 
 	/**
-	 * 右上角弹窗现在有没有在显示：有就让开一个槽位的高度。
+	 * 右上角弹窗现在占了多高：按<b>最低那个被占用的槽位</b>算。
 	 *
-	 * <p><b>用的是哪个 API</b>：本版本（26.1.2）没有 {@code ToastComponent} 这个名字，对应类是
-	 * {@link ToastManager}，入口是 {@link Minecraft#getToastManager()}。它<b>没有</b>公开的
-	 * {@code isEmpty()} / {@code getToastCount()}，可见列表与空闲槽计数都是私有的；能用的公开查询只有
-	 * {@link ToastManager#getToast(Class, Object)}（按"弹窗类型 + token"取那一条）。幸而
-	 * {@link AdvancementToast} 与 {@link RecipeToast} 都没有覆写 {@link Toast#getToken()}，它们的
-	 * token 恒为 {@link Toast#NO_TOKEN}，于是 {@code getToast(XxxToast.class, Toast.NO_TOKEN)} 就能拿到
-	 * 此刻正在显示（或排队等着显示）的那条弹窗，为 {@code null} 即没有。全程公开 API，不挂 Mixin、不用反射。
+	 * <p><b>不能用"占用了几个"</b>：原版弹窗消失后，剩下的那几个<b>不会往上挪</b>，槽位是钉死的。
+	 * 上面那条消失、下面那条还在时，按个数算会让小地图正好压到还在显示的那一条上。
 	 *
-	 * <p><b>两类弹窗都要认</b>：成就/进度（{@link AdvancementToast}）与<b>配方解锁</b>（{@link RecipeToast}）
-	 * 都画在右上角同一列。只认前者的话，玩家一解锁配方就会盖住小地图。
-	 *
-	 * <p>已知取舍：它把<b>排队中</b>的弹窗也算进来，槽位占满时会让得早一点；也数不出"同时有几条"，
-	 * 所以固定让开一个槽位（{@link Toast#SLOT_HEIGHT}）——本版本没有公开 API 能数出条数。
+	 * <p>原版没有公开查询，这里读 {@code ToastManager} 的占用位图（见 {@link ToastManagerAccessor}）——
+	 * 成就/进度、配方解锁、音乐提示都在这一列里排，不区分类型；{@code BitSet#length()} 就是
+	 * "最低那个被占用槽位的下沿"。
 	 */
-	private static double advancementToastShift() {
+	private static double toastShift() {
 		ToastManager toasts = Minecraft.getInstance().getToastManager();
-		if (toasts.getToast(AdvancementToast.class, Toast.NO_TOKEN) != null) {
-			return Toast.SLOT_HEIGHT;
-		}
-		if (toasts.getToast(RecipeToast.class, Toast.NO_TOKEN) != null) {
-			return Toast.SLOT_HEIGHT;
-		}
-		return 0.0;
+		int slots = ((ToastManagerAccessor) toasts).sinanmap$occupiedSlots().length();
+		return (double) slots * Toast.SLOT_HEIGHT;
 	}
 
 	/**
 	 * 右上角被原版的药水效果图标占了多高，小地图要往下让开这么多（一行 27、两行 53）。
 	 *
-	 * <p>成就/进度弹窗的让位见 {@link #advancementToastShift()}，两者在 {@link #topRightAvoidance()}
-	 * 里按较大值合并。
+	 * <p>成就/进度弹窗的让位见 {@link #toastShift()}，两者在 {@link #topRightAvoidance()} 里按较大值合并。
 	 */
 	private static int potionEffectsShift(LocalPlayer player) {
 		int positive = 0;

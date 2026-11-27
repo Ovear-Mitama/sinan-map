@@ -15,6 +15,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 
 import net.blay09.mods.waystones.api.Waystone;
 import net.blay09.mods.waystones.api.WaystoneKinds;
@@ -54,9 +55,13 @@ final class WaystoneIntegration {
 	/** 同步过来的路径点用这个颜色（浅青蓝），和玩家自己设的颜色分开。 */
 	private static final int COLOR = 0xFF9AD0F5;
 
-	/** 石碑方块与分享石方块的两条原版标签：用来就地确认"这条石碑在客户端的世界里还立着"。 */
-	private static final TagKey<Block> WAYSTONE_BLOCKS = blockTag("waystones");
-	private static final TagKey<Block> SHARESTONE_BLOCKS = blockTag("sharestones");
+	/**
+	 * "可以传送到的方块"这条标签：普通石碑、分享石、传送石（portstone）、传送板这些都在里面。
+	 *
+	 * <p>只用 {@code waystones} 那条会漏掉传送石一类——那些条目服务端照样会列出来，
+	 * 客户端却认不出脚下的方块，于是被当成"已经没了"。
+	 */
+	private static final TagKey<Block> TELEPORT_TARGETS = blockTag("is_teleport_target");
 
 	/** 按<b>石碑种类</b>分的当前清单；种类由 Waystones 自己定义（普通石碑、各种分享石…）。 */
 	private static final Map<Identifier, List<Waystone>> BY_KIND = new LinkedHashMap<>();
@@ -65,6 +70,9 @@ final class WaystoneIntegration {
 
 	/** 上一次同步时"开关是开还是关"：用来发现刚改了设置，见 {@link #tick()}。 */
 	private static Boolean lastEnabled;
+
+	/** 收到过至少一份服务器清单没有：没有它就不能按"清单是空的"去删已经同步出来的路径点。 */
+	private static boolean listArrived;
 
 	private WaystoneIntegration() {
 	}
@@ -92,6 +100,7 @@ final class WaystoneIntegration {
 	static void clearCache() {
 		BY_KIND.clear();
 		lastEnabled = null;
+		listArrived = false;
 	}
 
 	private static void onListReceived(WaystonesListReceivedEvent event) {
@@ -99,6 +108,7 @@ final class WaystoneIntegration {
 		minecraft.execute(() -> {
 			// 整份清单按种类给：直接覆盖那一种，被挖掉的石碑不会残留
 			BY_KIND.put(event.waystoneType(), List.copyOf(event.waystones()));
+			listArrived = true;
 			sync(minecraft);
 		});
 	}
@@ -138,6 +148,12 @@ final class WaystoneIntegration {
 
 	/** 把"目标路径点"整体推给路径点存储；关掉开关时目标就是空清单，等于整组清掉。 */
 	private static void sync(Minecraft minecraft) {
+		// 还没收到服务器清单、或玩家还没进来（换维度 / 传送途中）：这时"该有哪些"是不知道的，
+		// 照空清单同步会把已有的路径点删掉，之后也不会自己回来
+		if (!listArrived || minecraft.player == null) {
+			lastEnabled = null;
+			return;
+		}
 		boolean enabled = settings.waystoneIntegration();
 		lastEnabled = enabled;
 		List<Waypoint> desired = enabled ? collectDesired(minecraft) : List.of();
@@ -159,10 +175,16 @@ final class WaystoneIntegration {
 		List<Waypoint> result = new ArrayList<>();
 		for (List<Waystone> list : BY_KIND.values()) {
 			for (Waystone waystone : list) {
+				Waypoint previous = existing.get(waystone.getWaystoneUid());
 				if (!isUsable(minecraft, waystone)) {
+					if (previous != null) {
+						// 服务器还列着它，只是客户端这一刻判断不出来（区块没加载完、玩家还没准备好…）：
+						// 保留原样。凭一次瞬时判断删掉，标记就再也回不来
+						result.add(previous);
+					}
 					continue;
 				}
-				result.add(toWaypoint(minecraft, waystone, existing.get(waystone.getWaystoneUid())));
+				result.add(toWaypoint(minecraft, waystone, previous));
 			}
 		}
 		return result;
@@ -191,8 +213,10 @@ final class WaystoneIntegration {
 	}
 
 	/**
-	 * 这条石碑在客户端的世界里还立着吗。<b>只在"同一维度 + 区块已加载"时能判断</b>，其余一律当作"还在"：
-	 * 区块没加载时 {@code getBlockState} 返回空气，凭它删路径点会把远处好好的标记误删。
+	 * 这条石碑在客户端的世界里还立着吗。<b>只在"同一维度 + 区块完整加载"时能判断</b>，其余一律当作"还在"：
+	 *
+	 * <p>不能只看 {@code hasChunkAt}——该区块的完整数据还没到时它也可能是真，而 {@code getBlockState}
+	 * 落到占位区块上会一律返回 {@code void_air}，于是刚进世界的十几秒里每条石碑都被判成"没了"。
 	 */
 	private static boolean stillStanding(Minecraft minecraft, Waystone waystone) {
 		ClientLevel level = minecraft.level;
@@ -200,10 +224,12 @@ final class WaystoneIntegration {
 			return true;
 		}
 		BlockPos pos = waystone.getPos();
-		if (!level.hasChunkAt(pos)) {
+		boolean loaded = level.getChunkSource()
+				.getChunk(pos.getX() >> 4, pos.getZ() >> 4, ChunkStatus.FULL, false) != null;
+		if (!loaded || level.isOutsideBuildHeight(pos)) {
 			return true;
 		}
-		return isWaystoneBlock(level.getBlockState(pos));
+		return isTeleportTarget(level.getBlockState(pos));
 	}
 
 	/**
@@ -221,16 +247,19 @@ final class WaystoneIntegration {
 		int baseY = pos.getY();
 		if (level != null && level.dimension().equals(waystone.getDimension())) {
 			BlockPos below = pos.below();
-			// 只看下面一格就够：石碑就两格高，再往下不会是石碑
-			if (level.hasChunkAt(below) && isWaystoneBlock(level.getBlockState(below))) {
+			// 只看下面一格就够：石碑就两格高，再往下不会是石碑。
+			// 区块完整加载才问颜色，否则占位区块会一律返回 void_air
+			boolean loaded = level.getChunkSource()
+					.getChunk(below.getX() >> 4, below.getZ() >> 4, ChunkStatus.FULL, false) != null;
+			if (loaded && isTeleportTarget(level.getBlockState(below))) {
 				baseY = below.getY();
 			}
 		}
 		return baseY + Waypoint.MARKER_Y_OFFSET;
 	}
 
-	private static boolean isWaystoneBlock(BlockState state) {
-		return state.is(WAYSTONE_BLOCKS) || state.is(SHARESTONE_BLOCKS);
+	private static boolean isTeleportTarget(BlockState state) {
+		return state.is(TELEPORT_TARGETS);
 	}
 
 	/** 石碑 → 路径点：id 用石碑自己的 UUID，于是"同一条"永远覆盖同一条，不会越堆越多。 */
