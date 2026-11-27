@@ -3,9 +3,9 @@
 开源地图类 Mod：客户端小地图、全屏地图与路径点系统。
 
 Fabric 与 NeoForge 是**两个互不依赖的独立工程**，各自构建、各自发布，不存在跨加载器抽象层。
-与加载器无关的纯逻辑（坐标换算、路径点模型、后续的 JSON 存储）放在 `common`，由两个工程共享编译。
-`common` 里的代码**不允许**引用任何 Minecraft 或加载器类型，否则 NeoForge 工程将无法编译；
-用到 Minecraft 的代码必须写在各自的 `src/` 下。
+与加载器无关的纯逻辑（坐标换算、路径点模型、存储格式等）放在 `lib/`（Sinan Lib，独立的 Gradle 构建与版本号），
+由两个工程共同依赖。`lib/` 里的代码**不允许**引用任何 Minecraft 或加载器类型；
+依赖 Minecraft 的网络协议放在 `shared/`，同样由两端共享编译，用到 Minecraft 的其它代码写在各自的 `src/` 下。
 
 ## 环境要求
 
@@ -22,6 +22,13 @@ Fabric（构建根目录即工程目录）：
 ```bash
 ./gradlew build          # 构建 + 运行单元测试
 ./gradlew runClient      # 启动客户端
+```
+
+Sinan Lib（独立构建，两端构建时会自动先编它）：
+
+```bash
+./gradlew -p lib build
+./gradlew -p lib test
 ```
 
 NeoForge（独立工程，用根目录的 wrapper 指定工程目录）：
@@ -50,9 +57,10 @@ NeoForge 版与 Quilt 无关，单独分发。
 
 ## 单元测试
 
-共享层的测试位于 `common/test/java`，两端构建都会编译该目录：
+Sinan Lib 的测试位于 `lib/src/test/java`，用根目录的 wrapper 指定工程目录运行：
 
 ```bash
+./gradlew -p lib test       # Sinan Lib
 ./gradlew test              # Fabric 工程
 ./gradlew -p neoforge test  # NeoForge 工程
 ```

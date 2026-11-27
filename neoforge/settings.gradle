@@ -11,3 +11,6 @@ pluginManagement {
 
 // NeoForge 工程为独立构建，与根目录的 Fabric 工程互不依赖
 rootProject.name = 'sinanmap-neoforge'
+
+// 核心逻辑在仓库根目录的 lib/（Sinan Lib）
+includeBuild('../lib')

@@ -46,9 +46,10 @@
 
 - 构建通过：先把 `JAVA_HOME` 指向本机的 **JDK 25**（路径因机器而异），再运行
   `.\gradlew.bat compileJava`（Windows）或 `./gradlew compileJava`（Linux / macOS）；
-- 遵循既有目录结构与风格：共用逻辑放 `common/`，且**不得**引用 Minecraft 或加载器类型；
+- 遵循既有目录结构与风格：共用逻辑放 `lib/`，且**不得**引用 Minecraft 或加载器类型；
+  依赖 Minecraft 的共用代码放 `shared/`；
 - 注释用中文，写"为什么"而不是复述代码；不要写"用户说……"这类对话记录；
-- 新增行为尽量补一个单元测试（放 `common/test/`）。
+- 新增行为尽量补一个单元测试（放 `lib/src/test/`）。
 
 ### 2.5 PR 说明
 
@@ -82,9 +83,9 @@ restriction (free to use, modify and redistribute, including commercially); cont
 means you agree to that.
 
 Code requirements: the build must pass (`.\gradlew.bat compileJava`), shared logic goes in
-`common/` and must not reference Minecraft or loader types, comments are written in Chinese
-and explain "why" rather than restating the code, and new behaviour should come with a unit
-test under `common/test/`.
+`lib/` and must not reference Minecraft or loader types (Minecraft-dependent shared code
+goes in `shared/`), comments are written in Chinese and explain "why" rather than restating
+the code, and new behaviour should come with a unit test under `lib/src/test/`.
 
 Conduct: be kind and stay on topic. Harassment, demanding unreleased features, or asking for
 closed content to be published are not welcome.

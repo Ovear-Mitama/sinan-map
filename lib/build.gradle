@@ -1,0 +1,40 @@
+plugins {
+	id 'java-library'
+	id 'maven-publish'
+}
+
+def junitVersion = project.junit_version
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	testImplementation platform("org.junit:junit-bom:${junitVersion}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+tasks.test {
+	useJUnitPlatform()
+}
+
+publishing {
+	publications {
+		create('mavenJava', MavenPublication) {
+			from components.java
+			artifactId = 'sinan-lib'
+		}
+	}
+}

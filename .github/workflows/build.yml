@@ -13,6 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: lib
+            project: lib
           - name: fabric
             project: .
           - name: neoforge

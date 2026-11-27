@@ -21,7 +21,14 @@ repositories {
 	maven { url = 'https://api.modrinth.com/maven' }
 }
 
+// 核心库（源码在 lib/）：编译用它，打包时也把它的类并进模组 jar
+configurations {
+	coreLib
+}
+
 dependencies {
+	implementation 'sinanmap:sinan-lib:0.1.0'
+	coreLib 'sinanmap:sinan-lib:0.1.0'
 	minecraft "com.mojang:minecraft:${minecraftVersion}"
 	implementation "net.fabricmc:fabric-loader:${loaderVersion}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
@@ -42,13 +49,10 @@ dependencies {
 	localRuntime "maven.modrinth:shogi:${shogiVersion}"
 }
 
+// 纯逻辑在 lib/；这里只留依赖 Minecraft 的网络协议（两个加载器共用）
 sourceSets {
 	main {
-		// 与 NeoForge 工程共享的纯逻辑源码
-		java.srcDir 'common/java'
-	}
-	test {
-		java.srcDir 'common/test/java'
+		java.srcDir 'shared/java'
 	}
 }
 
@@ -85,7 +89,19 @@ processResources {
 	}
 }
 
+// 把 Sinan Lib 的类解出来，随模组 jar 一起发布（玩家仍只装一个文件）
+def coreLibFiles = configurations.coreLib.incoming.artifactView { }.files
+def unpackCoreLib = tasks.register('unpackCoreLib', Sync) {
+	from coreLibFiles.collect { zipTree(it) }
+	into layout.buildDirectory.dir('core-lib')
+	exclude 'META-INF/MANIFEST.MF'
+	exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+	// 文件集合是配置期定下的路径，任务依赖得手动补上，否则会先解压再构建 lib
+	dependsOn gradle.includedBuild('lib').task(':jar')
+}
+
 jar {
+	from unpackCoreLib
 	// rename 闭包在执行期运行，名字要在配置期取好，否则配置缓存会报错
 	def jarNameSuffix = project.name
 	from('LICENSE') {

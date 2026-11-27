@@ -11,3 +11,6 @@ pluginManagement {
 
 // Should match your modid
 rootProject.name = 'sinanmap'
+
+// 核心逻辑是独立的 Sinan Lib 构建（lib/），两个加载器都依赖它
+includeBuild('lib')
