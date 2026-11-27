@@ -206,8 +206,6 @@
 	"message.sinanmap.waypoint.group_renamed": "Group \"%s\" renamed to \"%s\" (%d waypoints)",
 	"message.sinanmap.waypoint.added": "Waypoint \"%s\" saved at X=%d Y=%d Z=%d",
 	"message.sinanmap.waypoint.failed": "Can't save a waypoint right now",
-	"message.sinanmap.waypoint.need_cheats": "Teleporting needs cheats (or server permission)",
-	"message.sinanmap.waypoint.other_dimension_teleport": "Can't teleport across dimensions",
 	"message.sinanmap.share.location_name": "Location",
 	"chat.sinanmap.share.line.waypoint": "%s shared a waypoint \"%s\" in %s",
 	"chat.sinanmap.share.line.location": "%s shared a location in %s",

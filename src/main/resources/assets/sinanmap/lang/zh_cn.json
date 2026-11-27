@@ -206,8 +206,6 @@
 	"message.sinanmap.waypoint.group_renamed": "分组「%s」已改名为「%s」（共 %d 条）",
 	"message.sinanmap.waypoint.added": "已记录路径点「%s」 X=%d Y=%d Z=%d",
 	"message.sinanmap.waypoint.failed": "现在还不能记录路径点",
-	"message.sinanmap.waypoint.need_cheats": "需要开启作弊（或服务器权限）才能传送",
-	"message.sinanmap.waypoint.other_dimension_teleport": "不能跨维度传送，请先到那个维度",
 	"message.sinanmap.share.location_name": "位置",
 	"chat.sinanmap.share.line.waypoint": "%s 分享了一个路径点「%s」在%s",
 	"chat.sinanmap.share.line.location": "%s 分享了一个位置在%s",

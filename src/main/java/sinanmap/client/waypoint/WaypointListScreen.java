@@ -1096,8 +1096,8 @@ public final class WaypointListScreen extends Screen {
 	}
 
 	/**
-	 * 传送到一条路径点，然后关掉本界面。能不能传（跨维度、没开作弊、没权限）统一在 {@link WaypointManager#teleport} 里判，
-	 * 世界地图的右键菜单走同一个入口。
+	 * 传送到一条路径点，然后关掉本界面。命令怎么发、跨维度怎么处理统一在
+	 * {@link WaypointManager#teleport} 里，世界地图的右键菜单走同一个入口。
 	 */
 	private void teleport(@Nullable Waypoint waypoint) {
 		if (waypoint == null) {

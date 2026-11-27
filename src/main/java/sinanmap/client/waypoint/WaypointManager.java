@@ -18,7 +18,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 
@@ -332,8 +331,8 @@ public final class WaypointManager {
 	}
 
 	/**
-	 * 传送到一条路径点（世界地图的右键菜单与管理器共用）：走原版 {@code /tp}——无权限时它会失败并在聊天栏说明，
-	 * 比自猜权限可靠；跨维度不传（坐标形式只在当前维度有效）。
+	 * 传送到一条路径点（世界地图的右键菜单与管理器共用）：一条原版命令发过去，
+	 * 有没有权限交给服务端判定——没权限时它照常驳回并回一句，不必在这边猜。
 	 */
 	public static void teleport(Minecraft minecraft, Waypoint waypoint) {
 		if (waypoint != null) {
@@ -341,7 +340,7 @@ public final class WaypointManager {
 		}
 	}
 
-	/** 传送到某个坐标；做不到时在动作栏说明原因。 */
+	/** 传送到某个坐标。 */
 	public static void teleportTo(Minecraft minecraft, WorldPos pos) {
 		teleportTo(minecraft, pos, false);
 	}
@@ -349,29 +348,29 @@ public final class WaypointManager {
 	/**
 	 * 传送到某个坐标。
 	 *
-	 * @param yUnknown 高度未知（算不出地表、路径点那份也是猜的）：命令改用 {@code ~} 保持当前高度，而不是猜一个
-	 *                 （猜 64 会落到地底）
+	 * <p>同维度直接 {@code /tp}；跨维度用 {@code /execute in <维度> run tp}，一条命令到位，
+	 * 不再要求玩家先自己过去。
+	 *
+	 * @param yUnknown 高度未知（算不出地表、路径点那份也是猜的）：同维度时命令用 {@code ~} 保持当前高度，
+	 *                 而不是猜一个（猜 64 会落到地底）；跨维度没有"当前高度"可用，仍用传进来的 Y
 	 */
 	public static void teleportTo(Minecraft minecraft, WorldPos pos, boolean yUnknown) {
 		LocalPlayer player = minecraft.player;
 		if (pos == null || player == null || minecraft.level == null) {
 			return;
 		}
-		String dimension = minecraft.level.dimension().identifier().toString();
-		if (!pos.dimension().equals(dimension)) {
-			notify(player, Component.translatable("message.sinanmap.waypoint.other_dimension_teleport"));
-			return;
+		boolean sameDimension = pos.dimension().equals(minecraft.level.dimension().identifier().toString());
+		Integer y;
+		if (sameDimension) {
+			y = yUnknown ? null : teleportY(minecraft, pos);
+		} else {
+			y = pos.blockY();
 		}
-		// 单人存档没开作弊时 /tp 一定失败，先说清楚，别让玩家以为模组坏了
-		MinecraftServer server = minecraft.getSingleplayerServer();
-		if (server != null && !server.getWorldData().isAllowCommands()) {
-			notify(player, Component.translatable("message.sinanmap.waypoint.need_cheats"));
-			return;
-		}
-		// 高度未知（调用方说不知、或者问下来也定不下来）→ 用 `~` 保持玩家当前高度
-		Integer y = yUnknown ? null : teleportY(minecraft, pos);
-		player.connection.sendCommand("tp @s %d %s %d".formatted(
-				pos.blockX(), y == null ? "~" : y.toString(), pos.blockZ()));
+		String coordinates = "%d %s %d".formatted(
+				pos.blockX(), y == null ? "~" : y.toString(), pos.blockZ());
+		player.connection.sendCommand(sameDimension
+				? "tp @s " + coordinates
+				: "execute in " + pos.dimension() + " run tp @s " + coordinates);
 	}
 
 	/**
