@@ -213,10 +213,10 @@ final class WaystoneIntegration {
 	}
 
 	/**
-	 * 这条石碑在客户端的世界里还立着吗。<b>只在"同一维度 + 区块完整加载"时能判断</b>，其余一律当作"还在"：
+	 * 这条石碑在客户端的世界里还立着吗：只在"同一维度 + 区块完整加载"时能判断，其余一律当作"还在"。
 	 *
-	 * <p>不能只看 {@code hasChunkAt}——该区块的完整数据还没到时它也可能是真，而 {@code getBlockState}
-	 * 落到占位区块上会一律返回 {@code void_air}，于是刚进世界的十几秒里每条石碑都被判成"没了"。
+	 * <p>不能只看 {@code hasChunkAt}：区块数据没到时它也可能是真，而 {@code getBlockState} 落到占位区块上
+	 * 一律返回 {@code void_air}，刚进世界那十几秒每条石碑都会被判成"没了"。
 	 */
 	private static boolean stillStanding(Minecraft minecraft, Waystone waystone) {
 		ClientLevel level = minecraft.level;
@@ -235,11 +235,8 @@ final class WaystoneIntegration {
 	/**
 	 * 路径点该用哪个高度。
 	 *
-	 * <p><b>不能直接用 {@code getPos()}</b>：石碑两格高的上下两半共用同一个 {@code Waystone} 对象，谁的方块实体先加载谁就把 pos
-	 * 写成<b>自己那一格</b>，于是 pos 会在上下两格间跳——直接拿它加偏移，标记会自己窜上去一格。
-	 *
-	 * <p>这里按<b>方块的实际位置</b>归一到最下面那格，再抬 {@link Waypoint#MARKER_Y_OFFSET} 格；
-	 * 判断不了（不同维度 / 区块没加载）时退回按 pos 算。
+	 * <p>不能直接用 {@code getPos()}：石碑上下两半共用同一个对象，pos 会在两格间跳，
+	 * 拿它加偏移标记会自己窜上去一格。这里归一到最下面那格再抬 {@link Waypoint#MARKER_Y_OFFSET} 格。
 	 */
 	private static double markerY(Minecraft minecraft, Waystone waystone) {
 		BlockPos pos = waystone.getPos();
@@ -247,8 +244,7 @@ final class WaystoneIntegration {
 		int baseY = pos.getY();
 		if (level != null && level.dimension().equals(waystone.getDimension())) {
 			BlockPos below = pos.below();
-			// 只看下面一格就够：石碑就两格高，再往下不会是石碑。
-			// 区块完整加载才问颜色，否则占位区块会一律返回 void_air
+			// 只看下面一格就够：石碑就两格高。区块完整加载才问方块，否则占位区块一律返回 void_air
 			boolean loaded = level.getChunkSource()
 					.getChunk(below.getX() >> 4, below.getZ() >> 4, ChunkStatus.FULL, false) != null;
 			if (loaded && isTeleportTarget(level.getBlockState(below))) {

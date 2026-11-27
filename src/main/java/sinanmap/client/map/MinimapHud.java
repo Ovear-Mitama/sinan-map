@@ -644,14 +644,10 @@ public final class MinimapHud {
 	}
 
 	/**
-	 * 右上角弹窗现在占了多高：按<b>最低那个被占用的槽位</b>算。
+	 * 右上角弹窗占了多高：按<b>最低那个被占用的槽位</b>算。
 	 *
-	 * <p><b>不能用"占用了几个"</b>：原版弹窗消失后，剩下的那几个<b>不会往上挪</b>，槽位是钉死的。
-	 * 上面那条消失、下面那条还在时，按个数算会让小地图正好压到还在显示的那一条上。
-	 *
-	 * <p>原版没有公开查询，这里读 {@code ToastManager} 的占用位图（见 {@link ToastManagerAccessor}）——
-	 * 成就/进度、配方解锁、音乐提示都在这一列里排，不区分类型；{@code BitSet#length()} 就是
-	 * "最低那个被占用槽位的下沿"。
+	 * <p>不能用"占了几条"：原版弹窗消失后剩下的不会上移，上面那条没了、下面那条还在时，
+	 * 按个数算会正好压到它。{@code BitSet#length()} 就是最低占用槽位的下沿。
 	 */
 	private static double toastShift() {
 		ToastManager toasts = Minecraft.getInstance().getToastManager();

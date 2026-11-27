@@ -330,10 +330,7 @@ public final class WaypointManager {
 		save(minecraft);
 	}
 
-	/**
-	 * 传送到一条路径点（世界地图的右键菜单与管理器共用）：一条原版命令发过去，
-	 * 有没有权限交给服务端判定——没权限时它照常驳回并回一句，不必在这边猜。
-	 */
+	/** 传送到一条路径点（世界地图的右键菜单与管理器共用）：权限交给服务端判定，不在客户端猜。 */
 	public static void teleport(Minecraft minecraft, Waypoint waypoint) {
 		if (waypoint != null) {
 			teleportTo(minecraft, waypoint.pos());
@@ -346,13 +343,10 @@ public final class WaypointManager {
 	}
 
 	/**
-	 * 传送到某个坐标。
+	 * 传送到某个坐标：同维度用 {@code /tp}，跨维度用 {@code /execute in <维度> run tp}。
 	 *
-	 * <p>同维度直接 {@code /tp}；跨维度用 {@code /execute in <维度> run tp}，一条命令到位，
-	 * 不再要求玩家先自己过去。
-	 *
-	 * @param yUnknown 高度未知（算不出地表、路径点那份也是猜的）：同维度时命令用 {@code ~} 保持当前高度，
-	 *                 而不是猜一个（猜 64 会落到地底）；跨维度没有"当前高度"可用，仍用传进来的 Y
+	 * @param yUnknown 高度未知：同维度时用 {@code ~} 保持当前高度（猜一个会落到地底）；
+	 *                 跨维度没有"当前高度"可用，仍用传进来的 Y
 	 */
 	public static void teleportTo(Minecraft minecraft, WorldPos pos, boolean yUnknown) {
 		LocalPlayer player = minecraft.player;
@@ -388,22 +382,14 @@ public final class WaypointManager {
 	/** 传送前在目标高度上下找落脚点的范围（格）。 */
 	private static final int TELEPORT_NEAR = 2;
 
-	/**
-	 * 天花板维度（地狱）里从目标高度往下找落脚点的最大深度（格）。
-	 *
-	 * <p>这类维度的高度图给的是基岩顶，拿它当兜底会让每一次传送都落在同一个高度上；
-	 * 真正的落脚点在地形里，往下找最近的一处才是"传送到这里"该去的地方。
-	 */
+	/** 天花板维度（地狱）里往下找落脚点的最大深度（格）：那里的高度图是基岩顶，不能拿来兜底。 */
 	private static final int TELEPORT_NETHER_DEPTH = 64;
 
 	/**
-	 * 传送用哪个 Y；返回 {@code null} 表示"高度未知"（调用方改用 {@code ~}）。
+	 * 传送用哪个 Y；{@code null} 表示"高度未知"（改用 {@code ~}）。
 	 *
-	 * <p>规则：站得住就用它（洞穴里的点因此不会被硬拽到地面）；站不住就在上下几格里找落脚点
-	 * ——地图上标的常常是"方块本身"或层高，差一两格就是空气；都没有才退回高度图。
-	 *
-	 * <p><b>不再拿 {@code ~} 兜底</b>：地图已经给出 Y 时，那个值就是玩家看到的落点，
-	 * 用 {@code ~} 会按玩家当前高度传送，几乎一定落在地下。
+	 * <p>站得住就用它；站不住在上下几格里找；都没有才退回高度图。地图已经给出 Y 时不再用 {@code ~}
+	 * 兜底——那是玩家当前高度，几乎一定落在地下。
 	 */
 	private static Integer teleportY(Minecraft minecraft, WorldPos pos) {
 		ClientLevel level = minecraft.level;

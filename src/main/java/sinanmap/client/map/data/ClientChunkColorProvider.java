@@ -1244,11 +1244,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		}
 	}
 
-	/**
-	 * 重采方块更新钩子登记过的区块，每帧最多花 {@link #BLOCK_CHANGE_BUDGET_NANOS}。
-	 *
-	 * <p>剩下的留在集合里下一帧继续，不丢；顺序不保证，但一帧只处理得了几块，够用。
-	 */
+	/** 重采方块更新钩子登记过的区块，每帧最多 {@link #BLOCK_CHANGE_BUDGET_NANOS}；剩下的下一帧继续。 */
 	private void refreshBlockChanges() {
 		if (pendingBlockChanges.isEmpty()) {
 			return;
@@ -1265,11 +1261,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
-	 * 玩家附近一圈的快速重采。
-	 *
-	 * <p>主扫描一圈要覆盖整个视距，轮回到玩家脚下可能要十几秒；而脚下的方块一改就该立刻看到。
-	 * 这里每 {@link #NEAR_REFRESH_INTERVAL_NANOS} 把玩家周围 3×3 区块重采一遍，判断与处置仍走
-	 * {@link #refreshChunkIfChanged}，真的变了才重画。
+	 * 玩家附近一圈的快速重采：主扫描转回脚下要十几秒，这里每 {@link #NEAR_REFRESH_INTERVAL_NANOS} 补一遍。
 	 */
 	private void refreshNear(long nowNanos) {
 		LocalPlayer player = minecraft.player;
@@ -1543,21 +1535,17 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			return LayerSelector.SURFACE;
 		}
 		int caveTop = LayerSelector.caveStart(player.getBlockY());
-		// 天花板维度（地狱）：地表高度给的是基岩顶，玩家永远"低于地表"，拿它判层只会一直停在切面上。
-		// 改看头顶有没有盖：周围一小圈还露着天、或者头顶有直通到顶的空柱，就按地表画；被实心方块盖住才算在洞里。
-		// 于是在基岩顶上往下挖竖井时，头顶一直通着，图就一直是那一层，不会跟着越挖越深。
+		// 天花板维度（地狱）：地表高度给的是基岩顶，拿它判层永远在"地下"，改看头顶有没有盖（见 underRoof）
 		if (mode != LayerMode.SURFACE && viewDimensionHasCeiling() && !foreignView()) {
-			// ① 已经进到基岩顶这一层（或站到上面）：地表数据在天花板下面，画出来是"基岩下的地形"；
-			//    改用玩家所在高度的切面，扫到的地板就是基岩本身
+			// 已进到基岩顶这一层：切面扫到的地板就是基岩本身
 			if (atCeilingRoof()) {
 				return caveTop;
 			}
-			// ② 还在这层下方、但已经贴得很近：切面窗口会探进基岩里扫成一张平图，改看地表
+			// 贴着基岩顶时切面会扫成一张平图，改看地表
 			boolean nearRoof = player.getBlockY() >= ceilingRoofY() - CEILING_SURFACE_MARGIN;
 			if (mode == LayerMode.CAVE) {
 				return nearRoof ? LayerSelector.SURFACE : caveTop;
 			}
-			// ③ 自动：头顶有没有盖决定用切面还是地表，见 underRoof
 			return underRoof() && !nearRoof ? caveTop : LayerSelector.SURFACE;
 		}
 		// 用"不含树叶"的高度图：WORLD_SURFACE 把树冠算进去，站在树下时地表高度会凭空高出一截，
@@ -1601,11 +1589,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	private long roofCheckedNanos;
 
 	/**
-	 * 玩家头顶有没有被实心方块盖住，自动分层用。
+	 * 玩家头顶有没有被实心方块盖住，自动分层用：周围一小圈里有一列看得见天、或头顶有直通到顶的空柱，就算露天。
 	 *
-	 * <p>周围一小圈里任意一列：看得见天（天空光满格），或者从玩家这一层往上有一条直通到顶的空柱，
-	 * 就算露天。地狱没有天空光，实际起作用的是那条空柱——所以原地上下挖不会来回切层，
-	 * 只有头顶那一列真的被挖通、或被盖住时才会变。
+	 * <p>地狱没有天空光，起作用的是那条空柱——所以原地上下挖不会来回切层，只有头顶真的被挖通或被盖住才变。
 	 */
 	private boolean underRoof() {
 		LocalPlayer player = minecraft.player;
@@ -2238,14 +2224,10 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
-	 * 天花板维度里，这一列的"地形顶"：从高度图给的那一格往下，<b>先穿过最上面的连续实心段（天花板）</b>，
-	 * 再找第一格不是空气、也不是装饰的方块。
+	 * 天花板维度里这一列的"地形顶"：先穿过最上面的连续实心段（天花板），再找第一格真正的地形。
 	 *
-	 * <p>地狱的 {@code WORLD_SURFACE} 高度图给的是基岩顶（Y≈127）：照着画就是一张平坦的基岩图，
-	 * 光标处 / 传送用的 Y 也会变成同一个值。跳过天花板之后，取到的是天花板下面真正的地形
-	 * （地狱岩地面、熔岩湖），既连续、又随坐标变化。
-	 *
-	 * <p>按节跳过整节空气（{@code hasOnlyAir()} 是 O(1)），因此"从 127 一路找到 40"通常只查几个节。
+	 * <p>地狱的 {@code WORLD_SURFACE} 给的是基岩顶，照着画就是一张平坦的基岩图、Y 也永远不变。
+	 * 按节跳过空气（{@code hasOnlyAir()} 是 O(1)），从 127 找到 40 通常只查几个节。
 	 */
 	private int terrainTopBelowCeiling(LevelChunk chunk, ClientLevel level,
 			int worldX, int worldZ, int topY, int minY) {
