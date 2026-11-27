@@ -347,7 +347,7 @@ public final class MinimapHud {
 		tiles.retryUnexplored(now);
 		warmVisible(layer, playerX, playerZ);
 
-		drawTerrain(graphics, rect, layer, playerX, playerZ, rotation, blocksPerGui);
+		drawTerrain(graphics, rect, layer, playerX, playerZ, rotation, blocksPerGui, blocksPerDevice < 1.0);
 		drawWaypoints(graphics, rect, playerX, playerZ, rotation, guiScale, blocksPerDevice);
 		drawTrackedPlayers(graphics, rect, playerX, playerZ, rotation, guiScale, blocksPerDevice);
 		// 生物雷达叠在地形与路径点之上：位置与路径点用同一套换算，头像在屏幕坐标系里正着画，
@@ -853,9 +853,12 @@ public final class MinimapHud {
 	 * → 平移到玩家所在的世界坐标。每页只要用<b>世界方块坐标</b>画一个整页矩形即可，页本身不用重算。
 	 *
 	 * <p>未填充的像素透明，裁剪到小地图范围用裁剪框（转过的矩形没法靠"只画可见页"裁）。
+	 *
+	 * @param sharp 是否用最近邻采样：放大到"一个方块超过一个设备像素"时必须关掉线性过滤，
+	 *              否则每个方块都被插值糊成一片
 	 */
 	private void drawTerrain(GuiGraphicsExtractor graphics, ScreenRect rect, int layer,
-			double playerX, double playerZ, float rotation, double blocksPerGui) {
+			double playerX, double playerZ, float rotation, double blocksPerGui, boolean sharp) {
 		// 底色：未探明的地方透出这一层暗色，见 UNEXPLORED_BACKGROUND
 		graphics.fill(rect.x(), rect.y(), rect.right(), rect.bottom(), UNEXPLORED_BACKGROUND);
 
@@ -882,11 +885,12 @@ public final class MinimapHud {
 				int x0 = pageX * size;
 				int z0 = pageZ * size;
 				if (nightAlpha < 255) {
-					WorldTilePages.drawPage(graphics, textures.dayId(), x0, z0, size, 0xFFFFFFFF);
+					WorldTilePages.drawPage(graphics, sharp ? textures.daySharpId() : textures.dayId(),
+							x0, z0, size, 0xFFFFFFFF);
 				}
 				if (nightAlpha > 0) {
-					WorldTilePages.drawPage(graphics, textures.nightId(), x0, z0, size,
-							nightAlpha << 24 | 0xFFFFFF);
+					WorldTilePages.drawPage(graphics, sharp ? textures.nightSharpId() : textures.nightId(),
+							x0, z0, size, nightAlpha << 24 | 0xFFFFFF);
 				}
 			}
 		}

@@ -930,9 +930,10 @@ public final class WorldTilePages implements Closeable {
 	/**
 	 * 画一页贴图。位置与大小交给外面那层变换矩阵，两个界面共用这一条。
 	 *
-	 * <p>传进来的名字决定采样器：小地图传 {@code dayId}（线性）、全屏地图传 {@code daySharpId}
-	 * （最近邻，方块边缘要锐），见 {@link ResampledTexture}。走<b>带颜色</b>的那条 {@code blit}——只有它
-	 * 能把 alpha 乘上去，也是唯一能用动态贴图带颜色的办法（见 {@link #register}）。
+	 * <p>传进来的名字决定采样器：{@code dayId} 是线性、{@code daySharpId} 是最近邻（方块边缘要锐）。
+	 * 缩小时用线性、放大到"一个方块超过一个设备像素"时用最近邻，见 {@link ResampledTexture}。
+	 * 走<b>带颜色</b>的那条 {@code blit}——只有它能把 alpha 乘上去，也是唯一能用动态贴图带颜色的办法
+	 * （见 {@link #register}）。
 	 *
 	 * <p><b>取样范围往内缩半个像素。</b>贴图是 {@code CLAMP_TO_EDGE} 的，直接取满 0..512 时第一/最后
 	 * 一个像素外侧那半格会被"夹"成边界像素，与邻页拼接的缝上取到的就是老像素而不是邻页内容。改成从 0.5
