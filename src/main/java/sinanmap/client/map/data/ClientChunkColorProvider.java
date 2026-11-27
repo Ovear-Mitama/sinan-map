@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -332,6 +333,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	/** 一轮检测最多花多少时间，免得某一帧把四周几百个区块一次采完。 */
 	private static final long REFRESH_BUDGET_NANOS = 1_000_000L;
 
+	/** 方块变化引发的重采每帧最多花多少时间。 */
+	private static final long BLOCK_CHANGE_BUDGET_NANOS = 1_000_000L;
+
 	/**
 	 * 检测半径的兜底值（区块）。
 	 *
@@ -372,6 +376,16 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 
 	/** 后台刚读到数据、地图可能还没画上的区块。与 {@link #changedChunks} 的区别见 {@link #drainArrivedChunks()}。 */
 	private final LongOpenHashSet arrivedChunks = new LongOpenHashSet();
+
+	/**
+	 * 方块更新钩子（{@code LevelBlockChangeMixin}）登记下来的区块：下一帧立刻重采。
+	 *
+	 * <p>钩子可能从别的线程进来，所以用并发集合；重复登记同一块会被集合吃掉。
+	 */
+	private final Set<Long> pendingBlockChanges = ConcurrentHashMap.newKeySet();
+
+	/** 当前这份数据源，供方块更新钩子登记改动。 */
+	private static volatile ClientChunkColorProvider active;
 
 	/**
 	 * 洞穴切片：按区块缓存的逐列原始数据，外加"每列结果在哪些高度上仍然成立"。
@@ -532,6 +546,22 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	/** 上面那个遍历器是按多大的窗口建的；与当前窗口不一致就重建。 */
 	private int refreshSweepSide;
 
+	/** 近圈重采的周期：见 {@link #refreshNear}。 */
+	private static final long NEAR_REFRESH_INTERVAL_NANOS = 300_000_000L;
+
+	/** 近圈半径（区块）：脚下那一块加上紧邻的一圈。 */
+	private static final int NEAR_RADIUS = 1;
+
+	/** 近圈每帧最多花多少时间。 */
+	private static final long NEAR_BUDGET_NANOS = 1_000_000L;
+
+	/** 近圈遍历器（中心 = 玩家所在区块），见 {@link #refreshNear}。 */
+	private CenterOutSweep nearSweep;
+	private int nearCenterChunkX = Integer.MIN_VALUE;
+	private int nearCenterChunkZ = Integer.MIN_VALUE;
+	private boolean nearRunning;
+	private long nearNextNanos;
+
 	private ClientLevel storageLevel;
 	private MapStorage storage;
 
@@ -566,6 +596,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 					return thread;
 				});
 		this.samplePool = new SamplePool(settings.effectiveCaveScanThreads());
+		active = this;
 	}
 
 	/**
@@ -655,6 +686,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	/** 换维度时把只按区块坐标作键的那几份缓存作废（与换世界的处理一致）。 */
 	private void dropDimensionCaches() {
 		changedChunks.clear();
+		pendingBlockChanges.clear();
 		caveSlices.clear();
 		surfaceSamples.clear();
 		prefetchGeneration++;
@@ -1125,6 +1157,14 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		arrivedChunks.add((long) chunkX << 32 | chunkZ & 0xFFFFFFFFL);
 	}
 
+	/** 方块更新钩子（{@code LevelBlockChangeMixin}）的入口：把改动过的区块记下来，等渲染线程去重采。 */
+	public static void recordBlockChange(int chunkX, int chunkZ) {
+		ClientChunkColorProvider provider = active;
+		if (provider != null) {
+			provider.pendingBlockChanges.add((long) chunkX << 32 | chunkZ & 0xFFFFFFFFL);
+		}
+	}
+
 	/**
 	 * 定期重新采样玩家四周已经加载的区块，把"地形被改过、地图还画着旧样子"的地方捡回来。
 	 *
@@ -1153,10 +1193,14 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			// 看的是别的维度时整轮改动检测都不跑：它采样的是当前世界，与看的那一层无关
 			return;
 		}
+		refreshSkyDarken();
+		// 方块变化是最准的信号：钩子登记了哪一块就只重采那一块
+		refreshBlockChanges();
+		// 先查脚下这一圈：主扫描转回来要十几秒，身边改的方块等不起
+		refreshNear(nowNanos);
 		if (nowNanos - lastRefreshNanos < refreshIntervalNanos) {
 			return;
 		}
-		refreshSkyDarken();
 
 		int radius = Math.max(REFRESH_RADIUS_FALLBACK, minecraft.options.getEffectiveRenderDistance());
 		int side = radius * 2 + 1;
@@ -1198,6 +1242,66 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		} else {
 			refreshIntervalNanos = Math.min(refreshIntervalNanos * 2, REFRESH_IDLE_MAX_NANOS);
 		}
+	}
+
+	/**
+	 * 重采方块更新钩子登记过的区块，每帧最多花 {@link #BLOCK_CHANGE_BUDGET_NANOS}。
+	 *
+	 * <p>剩下的留在集合里下一帧继续，不丢；顺序不保证，但一帧只处理得了几块，够用。
+	 */
+	private void refreshBlockChanges() {
+		if (pendingBlockChanges.isEmpty()) {
+			return;
+		}
+		long deadline = System.nanoTime() + BLOCK_CHANGE_BUDGET_NANOS;
+		for (Iterator<Long> iterator = pendingBlockChanges.iterator(); iterator.hasNext(); ) {
+			long packed = iterator.next();
+			iterator.remove();
+			refreshChunkIfChanged((int) (packed >> 32), (int) (long) packed);
+			if (System.nanoTime() >= deadline) {
+				return;
+			}
+		}
+	}
+
+	/**
+	 * 玩家附近一圈的快速重采。
+	 *
+	 * <p>主扫描一圈要覆盖整个视距，轮回到玩家脚下可能要十几秒；而脚下的方块一改就该立刻看到。
+	 * 这里每 {@link #NEAR_REFRESH_INTERVAL_NANOS} 把玩家周围 3×3 区块重采一遍，判断与处置仍走
+	 * {@link #refreshChunkIfChanged}，真的变了才重画。
+	 */
+	private void refreshNear(long nowNanos) {
+		LocalPlayer player = minecraft.player;
+		if (player == null) {
+			return;
+		}
+		int centerX = CoordinateSpaces.blockToChunk(player.getBlockX());
+		int centerZ = CoordinateSpaces.blockToChunk(player.getBlockZ());
+		int side = NEAR_RADIUS * 2 + 1;
+		if (nearSweep == null || centerX != nearCenterChunkX || centerZ != nearCenterChunkZ) {
+			nearCenterChunkX = centerX;
+			nearCenterChunkZ = centerZ;
+			nearSweep = new CenterOutSweep(side, side, NEAR_RADIUS, NEAR_RADIUS);
+			nearRunning = true;
+		}
+		if (!nearRunning) {
+			if (nowNanos < nearNextNanos) {
+				return;
+			}
+			nearRunning = true;
+			nearSweep.reset();
+		}
+		long deadline = System.nanoTime() + NEAR_BUDGET_NANOS;
+		while (nearSweep.hasNext()) {
+			refreshChunkIfChanged(centerX + nearSweep.x(), centerZ + nearSweep.y());
+			nearSweep.advance();
+			if (System.nanoTime() >= deadline) {
+				return;
+			}
+		}
+		nearRunning = false;
+		nearNextNanos = nowNanos + NEAR_REFRESH_INTERVAL_NANOS;
 	}
 
 	/**
@@ -1334,6 +1438,16 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			liveCaveTop = wanted;
 			return displayLayer();
 		}
+		// 天花板维度里"头顶有没有盖"是明确的状态、不会来回抖，变了就直接切过去，
+		// 不必等那 900ms 的类型去抖。
+		if (mode == LayerMode.AUTO && !foreignView() && viewDimensionHasCeiling()
+				&& !LayerSelector.isSameKind(viewLayer, wantedKey)) {
+			viewLayer = wantedKey;
+			liveCaveTop = wanted;
+			pendingLayer = UNSET_LAYER;
+			caveDisplayFilter.reset();
+			return displayLayer();
+		}
 		// 眼睛在水下时保持原层、整帧不换：见 wantedLayer 里 underwater 的说明。
 		// 连"洞穴内部逐格跟随"一起停掉——在水里本来就不该动层；出水后计时重来，该切的层照样会切。
 		if (underwater(minecraft.player)) {
@@ -1428,42 +1542,113 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		if (player == null || level == null) {
 			return LayerSelector.SURFACE;
 		}
-		// 用"不含树叶"的高度图：WORLD_SURFACE 把树冠算进去，站在树下时地表高度会凭空高出一截，
-		// 于是被误判成已进入地下，在树下来回走就会频繁切层
-		// 天花板维度（地狱）同样走这一套：玩家 Y 通常低于基岩顶，AUTO 因而落在洞穴切面，上下移动时
-		// 切层跟着变；只有贴近基岩顶时才改看俯视图（见下面的回退）。切面按方块光着色，
-		// 见 ChunkRecord#BLOCK_LIGHT_BAND。
-		int surfaceHeight = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-				player.getBlockX(), player.getBlockZ()) - 1;
 		int caveTop = LayerSelector.caveStart(player.getBlockY());
-		int resolved = LayerSelector.resolve(mode, player.getY(), surfaceHeight, caveTop);
-		// 天花板维度里，靠近顶的那一段分两种情况：
-		//   ① 玩家已经进到基岩顶这一层、或站到它上面：这里不能用地表——地表在基岩顶下面，
-		//      画出来是"基岩下的地形"。改用玩家所在高度的切面，切面扫到的地板就是基岩本身；
-		//   ② 还在这层下方、但已经贴得很近：切面窗口会探进基岩顶里，扫出来是一张平坦的基岩图。
-		//      这时改看"跳过天花板"的俯视图。
-		if (mode != LayerMode.SURFACE && viewDimensionHasCeiling()) {
-			int roofY = level.getHeight(Heightmap.Types.WORLD_SURFACE,
-					player.getBlockX(), player.getBlockZ()) - 1;
-			if (player.getBlockY() >= roofY - CEILING_ROOF_DEPTH) {
+		// 天花板维度（地狱）：地表高度给的是基岩顶，玩家永远"低于地表"，拿它判层只会一直停在切面上。
+		// 改看头顶有没有盖：周围一小圈还露着天、或者头顶有直通到顶的空柱，就按地表画；被实心方块盖住才算在洞里。
+		// 于是在基岩顶上往下挖竖井时，头顶一直通着，图就一直是那一层，不会跟着越挖越深。
+		if (mode != LayerMode.SURFACE && viewDimensionHasCeiling() && !foreignView()) {
+			if (mode == LayerMode.CAVE) {
 				return caveTop;
 			}
-			if (LayerSelector.isCave(resolved) && player.getBlockY() >= roofY - CEILING_SURFACE_MARGIN) {
-				return LayerSelector.SURFACE;
-			}
+			return underRoof() ? caveTop : LayerSelector.SURFACE;
 		}
-		return resolved;
+		// 用"不含树叶"的高度图：WORLD_SURFACE 把树冠算进去，站在树下时地表高度会凭空高出一截，
+		// 于是被误判成已进入地下，在树下来回走就会频繁切层
+		int surfaceHeight = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+				player.getBlockX(), player.getBlockZ()) - 1;
+		return LayerSelector.resolve(mode, player.getY(), surfaceHeight, caveTop);
 	}
 
-	/**
-	 * 基岩顶本身有多厚（格），见 {@link #wantedLayer}。
-	 *
-	 * <p>原版的基岩顶占 123~127 五层、最上面那层总是实心，取 4 即"站到最上面那层就算进了基岩层"。
-	 */
-	private static final int CEILING_ROOF_DEPTH = 4;
+	/** 自动分层判"头顶有没有盖"的半径（方块），见 {@link #underRoof()}。 */
+	private static final int ROOF_CHECK_RADIUS = 2;
 
-	/** 天花板维度里玩家离顶部多近（还没进基岩层时）就改看俯视图（格），见 {@link #wantedLayer}。 */
-	private static final int CEILING_SURFACE_MARGIN = 10;
+	/** {@link #underRoof()} 的结果缓存多久（纳秒）。 */
+	private static final long ROOF_CACHE_NANOS = 150_000_000L;
+
+	private boolean roofKnown;
+	private boolean roofCovered;
+	private int roofX = Integer.MIN_VALUE;
+	private int roofY;
+	private int roofZ;
+	private long roofCheckedNanos;
+
+	/**
+	 * 玩家头顶有没有被实心方块盖住，自动分层用。
+	 *
+	 * <p>周围一小圈里任意一列：看得见天（天空光满格），或者从玩家这一层往上有一条直通到顶的空柱，
+	 * 就算露天。地狱没有天空光，实际起作用的是那条空柱——所以原地上下挖不会来回切层，
+	 * 只有头顶那一列真的被挖通、或被盖住时才会变。
+	 */
+	private boolean underRoof() {
+		LocalPlayer player = minecraft.player;
+		ClientLevel level = minecraft.level;
+		if (player == null || level == null) {
+			return false;
+		}
+		long now = System.nanoTime();
+		int blockX = player.getBlockX();
+		int blockY = player.getBlockY();
+		int blockZ = player.getBlockZ();
+		if (roofKnown && blockX == roofX && blockY == roofY && blockZ == roofZ
+				&& now - roofCheckedNanos < ROOF_CACHE_NANOS) {
+			return roofCovered;
+		}
+		roofKnown = true;
+		roofX = blockX;
+		roofY = blockY;
+		roofZ = blockZ;
+		roofCheckedNanos = now;
+		roofCovered = roofCovered(level, blockX, blockY, blockZ);
+		return roofCovered;
+	}
+
+	/** 从玩家头顶那一层开始，一圈圈往外查：有一列通到顶上就返回 false。 */
+	private boolean roofCovered(ClientLevel level, int centerX, int playerY, int centerZ) {
+		int eyeY = playerY + 1;
+		int maxY = level.getMaxY() - 1;
+		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+		for (int ring = 0; ring <= ROOF_CHECK_RADIUS; ring++) {
+			for (int dx = -ring; dx <= ring; dx++) {
+				for (int dz = -ring; dz <= ring; dz++) {
+					if (Math.max(Math.abs(dx), Math.abs(dz)) != ring) {
+						continue;
+					}
+					int x = centerX + dx;
+					int z = centerZ + dz;
+					LevelChunk chunk = loadedChunk(x >> 4, z >> 4);
+					if (chunk == null) {
+						// 没加载：这一列不参与判断
+						continue;
+					}
+					if (level.getBrightness(LightLayer.SKY, pos.set(x, eyeY, z)) >= 15) {
+						return false;
+					}
+					int top = Math.min(level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z) - 1, maxY);
+					if (!hasCeilingAbove(chunk, pos, x, eyeY, z, top)) {
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	/** 这一列从 {@code eyeY} 到 {@code top} 之间有没有能当"盖"的方块。 */
+	private static boolean hasCeilingAbove(LevelChunk chunk, BlockPos.MutableBlockPos pos,
+			int x, int eyeY, int z, int top) {
+		for (int y = eyeY; y <= top; y++) {
+			if (blocksRoof(chunk.getBlockState(pos.set(x, y, z)))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** 能不能当"盖"：空气、流体、树叶、火把花草这些都不算。 */
+	private static boolean blocksRoof(BlockState state) {
+		return !state.isAir() && !state.liquid() && !state.is(BlockTags.LEAVES)
+				&& !isSurfaceDecoration(state);
+	}
 
 	/**
 	 * 天花板维度的切面按方块光着色；别的维度沿用原规则。
@@ -1872,8 +2057,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			prefetchQueued.remove(done.key());
 			// 收记录这一步只能在渲染线程上做：取方块本色、问生物群系都要碰客户端关卡
 			applyRecord(done, WorldSaveChunks.makeRecord(done.layer(), done.read().tag(),
-					done.chunkX(), done.chunkZ(), this, done.read().lightMissing(),
-					viewDimensionHasCeiling()));
+					done.chunkX(), done.chunkZ(), this, done.read().lightMissing()));
 		}
 		if (!caveBatch.isEmpty()) {
 			applyCaveBatch(caveBatch);
@@ -2025,53 +2209,10 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
-	 * 天花板维度里，这一列的"地形顶"：从高度图给的那一格往下，<b>先穿过最上面的连续实心段（天花板）</b>，
-	 * 再找第一格不是空气、也不是装饰的方块。
-	 *
-	 * <p>为什么需要它：地狱的 {@code WORLD_SURFACE} 高度图给的是基岩顶（Y≈127），照着画就是一张平坦的
-	 * 基岩图；而"玩家 Y 低于地表"的自动判层又必然成立 → 地图永远停在一条洞穴切面上。跳过天花板之后，
-	 * 画出来的是<b>天花板下面那层真正的地形</b>（地狱岩地面、熔岩湖），既连续又不随玩家高度变。
-	 *
-	 * <p>按节跳过整节空气（{@code hasOnlyAir()} 是 O(1)），因此"从 127 一路找到 40"通常只查几个节。
-	 */
-	private int terrainTopBelowCeiling(LevelChunk chunk, ClientLevel level,
-			int worldX, int worldZ, int topY, int minY) {
-		BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
-		int y = Math.min(topY, level.getMaxY() - 1);
-		// ① 穿过天花板本身：最上面那一段连续实心
-		while (y > minY) {
-			probe.set(worldX, y, worldZ);
-			BlockState state = chunk != null ? chunk.getBlockState(probe) : level.getBlockState(probe);
-			if (state.isAir()) {
-				break;
-			}
-			y--;
-		}
-		// ② 再从天花板下方往下找第一格真正的地形（整节空气一次跨过）
-		while (y > minY) {
-			LevelChunkSection section = sectionOf(chunk, y);
-			if (section != null && section.hasOnlyAir()) {
-				y = ((y >> 4) << 4) - 1;
-				continue;
-			}
-			probe.set(worldX, y, worldZ);
-			BlockState state = chunk != null ? chunk.getBlockState(probe) : level.getBlockState(probe);
-			if (!state.isAir() && !isSurfaceDecoration(state)) {
-				return y;
-			}
-			y--;
-		}
-		return minY;
-	}
-
-	/**
 	 * 正在看的这个维度是不是"有天窗"的维度（地狱这类）。
 	 *
-	 * <p>它们的共同点是：{@code WORLD_SURFACE} 高度图给出的是<b>天花板</b>而不是地形，所以
-	 * <ul>
-	 *   <li>地表取样要跳过天花板（见 {@link #terrainTopBelowCeiling}）；</li>
-	 *   <li>自动分层的"玩家低于地表 → 洞穴"在这类维度里恒成立，必须关掉，否则永远只画一条切面。</li>
-	 * </ul>
+	 * <p>它们的共同点是：{@code WORLD_SURFACE} 高度图给出的是<b>天花板</b>而不是地形，
+	 * 所以自动分层不能拿"玩家高度 vs 地表高度"来判，改看头顶有没有盖（见 {@link #underRoof()}）。
 	 */
 	public boolean viewDimensionHasCeiling() {
 		ClientLevel level = minecraft.level;
@@ -2128,9 +2269,6 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 这一块里读到的最大的天空光，见方法末尾的兜底
 		int maxSkyLight = 0;
 
-		// 天花板维度：这一块的地表要"跳过天花板"往下找（见 terrainTopBelowCeiling）
-		boolean ceiling = viewDimensionHasCeiling();
-
 		for (int localZ = 0; localZ < SinanConstants.CHUNK_SIZE; localZ++) {
 			for (int localX = 0; localX < SinanConstants.CHUNK_SIZE; localX++) {
 				int worldX = baseX + localX;
@@ -2146,12 +2284,6 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				// 而且 {@code colorY + 1} 落进实心方块里、光照恒为 0，整片远处发暗。
 				// （实测日志：`方块=minecraft:dirt startY=92 colorY=92 本色=#896447 sky=0`。）
 				int startY = level.getHeight(Heightmap.Types.WORLD_SURFACE, worldX, worldZ) - 1;
-				// 天花板维度（地狱这类）：高度图给的是<b>基岩顶</b>，不是地形。先穿过最上面那一段实心，
-				// 再从下面一路找真正的地形顶——否则整张地狱地图就是一片平坦的基岩，或者被自动模式
-				// 判成"一直在地下"、只画玩家附近的一条切面。
-				if (ceiling) {
-					startY = terrainTopBelowCeiling(chunk, level, worldX, worldZ, startY, minY);
-				}
 				int colorY = startY;
 				int index = localZ * SinanConstants.CHUNK_SIZE + localX;
 				pos.set(worldX, Math.max(colorY, minY), worldZ);
@@ -2816,6 +2948,7 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 原始数据也必须一起清掉——它只按区块坐标作键，不带世界标识，
 		// 留着就会把上一个存档的地形直接画到新存档里（表现出来就是"两个存档的数据串了"）
 		changedChunks.clear();
+		pendingBlockChanges.clear();
 		caveSlices.clear();
 		surfaceSamples.clear();
 		// 后台预读的排队/失败记录也一起作废：换了世界，"没有过"的结论不再成立。

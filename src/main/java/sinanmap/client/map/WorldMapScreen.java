@@ -3389,7 +3389,7 @@ public final class WorldMapScreen extends Screen {
 		int blockZ = (int) Math.floor(worldZ);
 		String dimension = currentDimension();
 		// 天花板维度（地狱这类）：高度图给的是基岩顶，问了只会得到"天花板的高度"。
-		// 这类维度的地形高度只有我们自己采样到的那份（见 terrainTopBelowCeiling）可用。
+		// 这类维度的地形高度只有我们自己采样到的那份可用。
 		if (colorProvider.viewDimensionHasCeiling()) {
 			int cached = colorProvider.cachedSurfaceHeight(
 					blockX >> 4, blockZ >> 4, blockX & 15, blockZ & 15);

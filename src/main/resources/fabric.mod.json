@@ -13,6 +13,9 @@
 		"issues": "https://github.com/Ovear-Mitama/sinan-map/issues/"
 	},
 	"icon": "assets/sinanmap/icon.png",
+	"mixins": [
+		"sinanmap.mixins.json"
+	],
 	"environment": "*",
 	"entrypoints": {
 		"main": [
