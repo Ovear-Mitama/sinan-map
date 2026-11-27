@@ -277,10 +277,12 @@ public final class WorldSaveChunks {
 	 *
 	 * @param layer 地表，或<b>归档后</b>的洞穴层高度（{@link LayerSelector#storageLayer}；预读/落盘都按它）
 	 * @param chunk 后台线程读到的原始 NBT；为 null 时直接返回 null
+	 * @param ceiling 这个维度有没有天花板（地狱这类）：地表要跳过最上面那段实心，
+	 *                见 {@code ClientChunkColorProvider#terrainTopBelowCeiling}
 	 * @return 整块一个非空气方块都没有时返回 null
 	 */
 	static ChunkRecord makeRecord(int layer, CompoundTag chunk, int chunkX, int chunkZ, ColumnColor colors,
-			boolean lightMissing) {
+			boolean lightMissing, boolean ceiling) {
 		if (chunk == null) {
 			return null;
 		}
@@ -289,7 +291,7 @@ public final class WorldSaveChunks {
 			return makeCaveRecord(scanCaveColumns(chunk, chunkX, chunkZ, layer, colors), chunkX, chunkZ, colors);
 		}
 		noteAttempt();
-		ChunkRecord record = toRecord(chunk, chunkX, chunkZ, colors, lightMissing);
+		ChunkRecord record = toRecord(chunk, chunkX, chunkZ, colors, lightMissing, ceiling);
 		if (record == null) {
 			diagnose(chunkX, chunkZ, "整块没有非空气方块");
 			return null;
@@ -1395,7 +1397,7 @@ public final class WorldSaveChunks {
 	 * @return 整块一个非空气方块都没有时返回 null（那不是地形，不该画成一块黑）
 	 */
 	private static ChunkRecord toRecord(CompoundTag chunk, int chunkX, int chunkZ, ColumnColor colors,
-			boolean lightMissing) {
+			boolean lightMissing, boolean ceiling) {
 		ChunkRecord record = new ChunkRecord();
 		ListTag sections = chunk.getListOrEmpty("sections");
 		// 每列顶面（最上面那个非空气方块）的高度
@@ -1403,6 +1405,9 @@ public final class WorldSaveChunks {
 		java.util.Arrays.fill(topY, Integer.MIN_VALUE);
 		int[] topSky = new int[ChunkRecord.COLUMNS];
 		int[] topBlock = new int[ChunkRecord.COLUMNS];
+		// 天花板维度：每列"已经穿过天花板、见到空气"了没有。天花板（基岩顶）不算地形——
+		// 不跳过它，整张地狱地图就是一片平坦的基岩（与实时采样那条路的 terrainTopBelowCeiling 对应）
+		boolean[] ceilingPassed = ceiling ? new boolean[ChunkRecord.COLUMNS] : null;
 		// 每列的覆盖层（水或冰），没有就是 null；与之配套的高度（群系按层自己那一格问）
 		BlockState[] overlay = new BlockState[ChunkRecord.COLUMNS];
 		int[] overlayY = new int[ChunkRecord.COLUMNS];
@@ -1466,11 +1471,19 @@ public final class WorldSaveChunks {
 							resolved[paletteIndex] = state;
 						}
 						if (state.isAir()) {
+							if (ceilingPassed != null) {
+								// 见到空气 = 已经穿过天花板，下面第一块实心才是地形顶
+								ceilingPassed[index] = true;
+							}
 							continue;
 						}
 						if (colors.shouldIgnore(state)) {
 							// 火把、花草这类"不是地面"的东西：跳过，接着往下找地面。名单必须与实时采样
 							// 一致，否则加载范围边界上会出现一圈色差
+							continue;
+						}
+						if (ceilingPassed != null && !ceilingPassed[index]) {
+							// 还在天花板那一段实心里：跳过（不算顶面、也不当地形）
 							continue;
 						}
 						if (topY[index] == Integer.MIN_VALUE) {

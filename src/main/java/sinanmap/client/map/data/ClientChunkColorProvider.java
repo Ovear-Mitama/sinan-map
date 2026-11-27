@@ -1438,10 +1438,10 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			liveCaveTop = wanted;
 			return displayLayer();
 		}
-		// 天花板维度里"头顶有没有盖"是明确的状态、不会来回抖，变了就直接切过去，
-		// 不必等那 900ms 的类型去抖。
-		if (mode == LayerMode.AUTO && !foreignView() && viewDimensionHasCeiling()
-				&& !LayerSelector.isSameKind(viewLayer, wantedKey)) {
+		// 站上基岩顶、或天花板维度里"头顶有没有盖"变了，都是明确的位置变化、不会来回抖，
+		// 直接切过去，不必等那 900ms 的类型去抖。
+		if (atCeilingRoof() || (mode == LayerMode.AUTO && !foreignView() && viewDimensionHasCeiling()
+				&& !LayerSelector.isSameKind(viewLayer, wantedKey))) {
 			viewLayer = wantedKey;
 			liveCaveTop = wanted;
 			pendingLayer = UNSET_LAYER;
@@ -1547,10 +1547,18 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 改看头顶有没有盖：周围一小圈还露着天、或者头顶有直通到顶的空柱，就按地表画；被实心方块盖住才算在洞里。
 		// 于是在基岩顶上往下挖竖井时，头顶一直通着，图就一直是那一层，不会跟着越挖越深。
 		if (mode != LayerMode.SURFACE && viewDimensionHasCeiling() && !foreignView()) {
-			if (mode == LayerMode.CAVE) {
+			// ① 已经进到基岩顶这一层（或站到上面）：地表数据在天花板下面，画出来是"基岩下的地形"；
+			//    改用玩家所在高度的切面，扫到的地板就是基岩本身
+			if (atCeilingRoof()) {
 				return caveTop;
 			}
-			return underRoof() ? caveTop : LayerSelector.SURFACE;
+			// ② 还在这层下方、但已经贴得很近：切面窗口会探进基岩里扫成一张平图，改看地表
+			boolean nearRoof = player.getBlockY() >= ceilingRoofY() - CEILING_SURFACE_MARGIN;
+			if (mode == LayerMode.CAVE) {
+				return nearRoof ? LayerSelector.SURFACE : caveTop;
+			}
+			// ③ 自动：头顶有没有盖决定用切面还是地表，见 underRoof
+			return underRoof() && !nearRoof ? caveTop : LayerSelector.SURFACE;
 		}
 		// 用"不含树叶"的高度图：WORLD_SURFACE 把树冠算进去，站在树下时地表高度会凭空高出一截，
 		// 于是被误判成已进入地下，在树下来回走就会频繁切层
@@ -1558,6 +1566,26 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				player.getBlockX(), player.getBlockZ()) - 1;
 		return LayerSelector.resolve(mode, player.getY(), surfaceHeight, caveTop);
 	}
+
+	/** 玩家所在列的基岩顶高度：{@code WORLD_SURFACE} 在这类维度里给的就是天花板。 */
+	private int ceilingRoofY() {
+		return minecraft.level.getHeight(Heightmap.Types.WORLD_SURFACE,
+				minecraft.player.getBlockX(), minecraft.player.getBlockZ()) - 1;
+	}
+
+	/** 玩家是不是已经站进基岩顶这一层（或站到它上面），见 {@link #wantedLayer}。 */
+	private boolean atCeilingRoof() {
+		if (!viewDimensionHasCeiling() || minecraft.player == null || minecraft.level == null) {
+			return false;
+		}
+		return minecraft.player.getBlockY() >= ceilingRoofY() - CEILING_ROOF_DEPTH;
+	}
+
+	/** 基岩顶本身有多厚（格）：原版占 123~127 五层，取 4 即"站到最上面那层就算进了基岩层"。 */
+	private static final int CEILING_ROOF_DEPTH = 4;
+
+	/** 天花板维度里玩家离顶部多近（还没进基岩层时）就改看地表（格），见 {@link #wantedLayer}。 */
+	private static final int CEILING_SURFACE_MARGIN = 10;
 
 	/** 自动分层判"头顶有没有盖"的半径（方块），见 {@link #underRoof()}。 */
 	private static final int ROOF_CHECK_RADIUS = 2;
@@ -2057,7 +2085,8 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 			prefetchQueued.remove(done.key());
 			// 收记录这一步只能在渲染线程上做：取方块本色、问生物群系都要碰客户端关卡
 			applyRecord(done, WorldSaveChunks.makeRecord(done.layer(), done.read().tag(),
-					done.chunkX(), done.chunkZ(), this, done.read().lightMissing()));
+					done.chunkX(), done.chunkZ(), this, done.read().lightMissing(),
+					viewDimensionHasCeiling()));
 		}
 		if (!caveBatch.isEmpty()) {
 			applyCaveBatch(caveBatch);
@@ -2209,10 +2238,53 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 	}
 
 	/**
+	 * 天花板维度里，这一列的"地形顶"：从高度图给的那一格往下，<b>先穿过最上面的连续实心段（天花板）</b>，
+	 * 再找第一格不是空气、也不是装饰的方块。
+	 *
+	 * <p>地狱的 {@code WORLD_SURFACE} 高度图给的是基岩顶（Y≈127）：照着画就是一张平坦的基岩图，
+	 * 光标处 / 传送用的 Y 也会变成同一个值。跳过天花板之后，取到的是天花板下面真正的地形
+	 * （地狱岩地面、熔岩湖），既连续、又随坐标变化。
+	 *
+	 * <p>按节跳过整节空气（{@code hasOnlyAir()} 是 O(1)），因此"从 127 一路找到 40"通常只查几个节。
+	 */
+	private int terrainTopBelowCeiling(LevelChunk chunk, ClientLevel level,
+			int worldX, int worldZ, int topY, int minY) {
+		BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+		int y = Math.min(topY, level.getMaxY() - 1);
+		// ① 穿过天花板本身：最上面那一段连续实心
+		while (y > minY) {
+			probe.set(worldX, y, worldZ);
+			BlockState state = chunk != null ? chunk.getBlockState(probe) : level.getBlockState(probe);
+			if (state.isAir()) {
+				break;
+			}
+			y--;
+		}
+		// ② 再从天花板下方往下找第一格真正的地形（整节空气一次跨过）
+		while (y > minY) {
+			LevelChunkSection section = sectionOf(chunk, y);
+			if (section != null && section.hasOnlyAir()) {
+				y = ((y >> 4) << 4) - 1;
+				continue;
+			}
+			probe.set(worldX, y, worldZ);
+			BlockState state = chunk != null ? chunk.getBlockState(probe) : level.getBlockState(probe);
+			if (!state.isAir() && !isSurfaceDecoration(state)) {
+				return y;
+			}
+			y--;
+		}
+		return minY;
+	}
+
+	/**
 	 * 正在看的这个维度是不是"有天窗"的维度（地狱这类）。
 	 *
-	 * <p>它们的共同点是：{@code WORLD_SURFACE} 高度图给出的是<b>天花板</b>而不是地形，
-	 * 所以自动分层不能拿"玩家高度 vs 地表高度"来判，改看头顶有没有盖（见 {@link #underRoof()}）。
+	 * <p>它们的共同点是：{@code WORLD_SURFACE} 高度图给出的是<b>天花板</b>而不是地形，所以
+	 * <ul>
+	 *   <li>地表取样要跳过天花板（见 {@link #terrainTopBelowCeiling}）；</li>
+	 *   <li>自动分层改看头顶有没有盖（见 {@link #underRoof()}），不能拿"玩家高度 vs 地表高度"来判。</li>
+	 * </ul>
 	 */
 	public boolean viewDimensionHasCeiling() {
 		ClientLevel level = minecraft.level;
@@ -2269,6 +2341,9 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 		// 这一块里读到的最大的天空光，见方法末尾的兜底
 		int maxSkyLight = 0;
 
+		// 天花板维度：这一块的地表要"跳过天花板"往下找（见 terrainTopBelowCeiling）
+		boolean ceiling = viewDimensionHasCeiling();
+
 		for (int localZ = 0; localZ < SinanConstants.CHUNK_SIZE; localZ++) {
 			for (int localX = 0; localX < SinanConstants.CHUNK_SIZE; localX++) {
 				int worldX = baseX + localX;
@@ -2284,6 +2359,11 @@ public final class ClientChunkColorProvider implements ChunkColorProvider, World
 				// 而且 {@code colorY + 1} 落进实心方块里、光照恒为 0，整片远处发暗。
 				// （实测日志：`方块=minecraft:dirt startY=92 colorY=92 本色=#896447 sky=0`。）
 				int startY = level.getHeight(Heightmap.Types.WORLD_SURFACE, worldX, worldZ) - 1;
+				// 天花板维度（地狱这类）：高度图给的是基岩顶。先穿过最上面那一段实心，
+				// 再从下面找真正的地形顶——否则整张地狱地图就是一片平坦的基岩，Y 也永远不变。
+				if (ceiling) {
+					startY = terrainTopBelowCeiling(chunk, level, worldX, worldZ, startY, minY);
+				}
 				int colorY = startY;
 				int index = localZ * SinanConstants.CHUNK_SIZE + localX;
 				pos.set(worldX, Math.max(colorY, minY), worldZ);

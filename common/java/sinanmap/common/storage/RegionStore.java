@@ -80,11 +80,8 @@ public final class RegionStore implements Closeable {
 	 *
 	 * <p><b>39 → 40</b>：天花板维度（地狱）的洞穴切面走得更深（24 → 30 格），
 	 * 旧的切面数据是浅扫出来的，只能整版本作废一次。
-	 *
-	 * <p><b>40 → 41</b>：天花板维度的地表改回按原版高度图取样（也就是基岩顶本身）。
-	 * 旧数据存的是"跳过天花板"找到的地形，与新口径混在一起会一半是基岩、一半是地形，只能整版本作废一次。
 	 */
-	private static final int VERSION = 41;
+	private static final int VERSION = 40;
 
 	/** 索引表在文件里的起点（前面是魔数与版本）。 */
 	private static final int TABLE_OFFSET = 16;

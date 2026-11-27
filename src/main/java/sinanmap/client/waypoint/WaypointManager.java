@@ -385,15 +385,25 @@ public final class WaypointManager {
 		WaypointShare.share(waypoint);
 	}
 
+	/** 传送前在目标高度上下找落脚点的范围（格）。 */
+	private static final int TELEPORT_NEAR = 2;
+
 	/**
-	 * 传送用哪个 Y；<b>定不下来时返回 null</b>（调用方改用 {@code ~}）。
+	 * 天花板维度（地狱）里从目标高度往下找落脚点的最大深度（格）。
 	 *
-	 * <p><b>不能照路径点里存的那个直接传</b>：那个 Y 可能是"当时地图还不知道高度"时留下的猜测值
-	 * （旧版本固定写 64、或在没加载的远处随手新建），照它传送就是<b>落到地底、卡在石头里</b>。
+	 * <p>这类维度的高度图给的是基岩顶，拿它当兜底会让每一次传送都落在同一个高度上；
+	 * 真正的落脚点在地形里，往下找最近的一处才是"传送到这里"该去的地方。
+	 */
+	private static final int TELEPORT_NETHER_DEPTH = 64;
+
+	/**
+	 * 传送用哪个 Y；返回 {@code null} 表示"高度未知"（调用方改用 {@code ~}）。
 	 *
-	 * <p>规则：<b>站得住</b>（脚与头都不是挡路方块）就用它（洞穴里的点因此不会被硬拽到地面）；
-	 * 站不住就改用这一列的地表高度——已加载的问客户端高度图，没加载的问存档里原版写的高度图
-	 * （见 {@code WorldSaveChunks#surfaceHeightAt}）；两处都问不到就返回 {@code null}。
+	 * <p>规则：站得住就用它（洞穴里的点因此不会被硬拽到地面）；站不住就在上下几格里找落脚点
+	 * ——地图上标的常常是"方块本身"或层高，差一两格就是空气；都没有才退回高度图。
+	 *
+	 * <p><b>不再拿 {@code ~} 兜底</b>：地图已经给出 Y 时，那个值就是玩家看到的落点，
+	 * 用 {@code ~} 会按玩家当前高度传送，几乎一定落在地下。
 	 */
 	private static Integer teleportY(Minecraft minecraft, WorldPos pos) {
 		ClientLevel level = minecraft.level;
@@ -402,14 +412,36 @@ public final class WaypointManager {
 		}
 		int x = pos.blockX();
 		int z = pos.blockZ();
-		if (Boolean.TRUE.equals(WorldSaveChunks.standableAt(minecraft, x, pos.blockY(), z))) {
-			return pos.blockY();
+		int y = pos.blockY();
+		boolean loaded = level.getChunkSource().getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) != null;
+		if (standable(minecraft, x, y, z)) {
+			return y;
 		}
-		if (level.getChunkSource().getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) != null) {
+		for (int offset = 1; offset <= TELEPORT_NEAR; offset++) {
+			if (standable(minecraft, x, y + offset, z)) {
+				return y + offset;
+			}
+			if (standable(minecraft, x, y - offset, z)) {
+				return y - offset;
+			}
+		}
+		if (loaded && level.dimensionType().hasCeiling()) {
+			for (int offset = 1; offset <= TELEPORT_NETHER_DEPTH; offset++) {
+				if (standable(minecraft, x, y - offset, z)) {
+					return y - offset;
+				}
+			}
+			return y;
+		}
+		if (loaded) {
 			return level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
 		}
 		int fromSave = WorldSaveChunks.surfaceHeightAt(minecraft, x, z);
-		return fromSave == WorldSaveChunks.NO_HEIGHT ? null : fromSave;
+		return fromSave == WorldSaveChunks.NO_HEIGHT ? y : fromSave;
+	}
+
+	private static boolean standable(Minecraft minecraft, int x, int y, int z) {
+		return Boolean.TRUE.equals(WorldSaveChunks.standableAt(minecraft, x, y, z));
 	}
 
 	/** 在动作栏上回一句。 */
