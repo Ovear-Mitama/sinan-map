@@ -173,7 +173,7 @@ public final class WaypointRenderer {
 	private static final double HIT_HYSTERESIS = 3.0;
 
 	/** 小地图上的整体缩放：那么小的地方按原尺寸画会把地形盖住（固定 GUI 比例 → 跟着界面等比）。 */
-	public static final float MINIMAP_SCALE = 0.7F;
+	public static final float MINIMAP_SCALE = 0.6F;
 
 	/** 一屏最多画多少条：路径点再多也不该把地图糊死。 */
 	public static final int MAX_WORLD_MAP_MARKERS = 200;
