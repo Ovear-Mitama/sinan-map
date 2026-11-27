@@ -12,8 +12,8 @@ import sinanmap.common.SinanConstants;
  */
 public final class SinanNet {
 
-	/** 当前协议版本。改动任何一个包的结构都要把它加一。 */
-	public static final int PROTOCOL_VERSION = 1;
+	/** 当前协议版本。改动任何一个包的结构（含删包）都要把它加一。 */
+	public static final int PROTOCOL_VERSION = 2;
 
 	private SinanNet() {
 	}

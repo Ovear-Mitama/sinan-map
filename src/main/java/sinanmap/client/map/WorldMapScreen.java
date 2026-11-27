@@ -1265,13 +1265,11 @@ public final class WorldMapScreen extends Screen {
 		menu.clear();
 		if (hovered != null) {
 			// 不再放"选中 XXX"这一项：选中路径点改为<b>左键直接点</b>它就完成
-			// （见 mouseClicked 里 waypointAt 那一段），右键菜单只剩编辑 / 传送 / 分享 / 删除
+			// （见 mouseClicked 里 waypointAt 那一段），右键菜单只剩编辑 / 传送 / 删除
 			menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.edit"),
 					() -> openEditor(hovered, null)));
 			menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.teleport"),
 					() -> WaypointManager.teleport(minecraft, hovered)));
-			menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.share_waypoint"),
-					() -> WaypointManager.shareWaypoint(hovered)));
 			menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.delete"),
 					() -> WaypointManager.instance().remove(minecraft, hovered.id())));
 		} else {
@@ -1279,8 +1277,6 @@ public final class WorldMapScreen extends Screen {
 					() -> openEditor(null, here)));
 			menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.teleport_here"),
 					() -> WaypointManager.teleportTo(minecraft, here, yUnknown)));
-			menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.share_here"),
-					() -> WaypointManager.shareLocation(here)));
 		}
 		menu.add(new MenuItem(Component.translatable("screen.sinanmap.menu.manager"),
 				() -> minecraft.setScreen(new WaypointListScreen(this))));
@@ -4054,7 +4050,7 @@ public final class WorldMapScreen extends Screen {
 	}
 
 	/**
-	 * 当前实际显示的维度。没切过时就是玩家所在的维度——传送、新建、分享这些老路径读到的还是原来那个值。
+	 * 当前实际显示的维度。没切过时就是玩家所在的维度——传送、新建这些操作读到的还是原来那个值。
 	 */
 	private String currentDimension() {
 		if (displayDimension != null) {

@@ -367,18 +367,6 @@ public final class WaypointManager {
 				: "execute in " + pos.dimension() + " run tp @s " + coordinates);
 	}
 
-	/**
-	 * 在聊天里分享一串坐标（收件人点 {@code [添加]} 就能直接建出来）。实现见 {@link WaypointShare}。
-	 */
-	public static void shareLocation(WorldPos pos) {
-		WaypointShare.shareLocation(pos);
-	}
-
-	/** 在聊天里分享一条路径点（带名字），见 {@link #shareLocation}。 */
-	public static void shareWaypoint(Waypoint waypoint) {
-		WaypointShare.share(waypoint);
-	}
-
 	/** 传送前在目标高度上下找落脚点的范围（格）。 */
 	private static final int TELEPORT_NEAR = 2;
 

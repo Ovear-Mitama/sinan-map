@@ -199,7 +199,6 @@ public final class WaypointListScreen extends Screen {
 				"screen.sinanmap.waypoint.new_edit",
 				"screen.sinanmap.waypoint.toggle",
 				"screen.sinanmap.waypoint.teleport",
-				"screen.sinanmap.waypoint.share",
 				"screen.sinanmap.waypoint.delete",
 				"screen.sinanmap.waypoint.back",
 		};
@@ -207,11 +206,10 @@ public final class WaypointListScreen extends Screen {
 				() -> openEditor(selectedWaypoint()),
 				() -> toggleVisible(selectedWaypoint()),
 				() -> teleport(selectedWaypoint()),
-				() -> share(selectedWaypoint()),
 				() -> delete(selectedWaypoint()),
 				this::onClose,
 		};
-		// 六颗按钮按可用宽度分摊：窗口窄时一起变窄，绝不把两端的按钮挤到屏外
+		// 底部按钮按可用宽度分摊：窗口窄时一起变窄，绝不把两端的按钮挤到屏外
 		int buttonWidth = Math.clamp((width - 16 - BUTTON_GAP * (labels.length - 1)) / labels.length,
 				BUTTON_WIDTH_MIN, BUTTON_WIDTH_MAX);
 		int x = (width - (buttonWidth * labels.length + BUTTON_GAP * (labels.length - 1))) / 2;
@@ -1107,11 +1105,4 @@ public final class WaypointListScreen extends Screen {
 		onClose();
 	}
 
-	/** 分享一条路径点到聊天里。不关界面：分享完还能接着分享别的（与"传送"要关界面不同）。 */
-	private void share(@Nullable Waypoint waypoint) {
-		if (waypoint == null) {
-			return;
-		}
-		WaypointManager.shareWaypoint(waypoint);
-	}
 }

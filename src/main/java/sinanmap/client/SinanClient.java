@@ -15,7 +15,6 @@ import sinanmap.client.net.SinanClientNet;
 import sinanmap.client.radar.EntityRadar;
 import sinanmap.client.waypoint.WaypointHud;
 import sinanmap.client.waypoint.WaypointManager;
-import sinanmap.client.waypoint.WaypointShare;
 import sinanmap.common.hud.MinimapSettings;
 
 /**
@@ -51,9 +50,7 @@ public final class SinanClient {
 		// 放在 HUD 里推进的话，HUD 还没画完的几何会被画进头像那张离屏画布，表现为"每个头像都有杂色"
 		EntityRadar.registerPumpHook();
 		SinanKeyMappings.register(colorProvider, minimap);
-		// 聊天里的路径点分享：改收到的消息（接上"[添加]"）+ 收下分享用的客户端命令
-		WaypointShare.register();
-		// 服务端的可选增强：世界标识、服务端路径点、其他玩家坐标。服务端没装时这里只是空转
+		// 服务端的可选增强：世界标识、其他玩家坐标。服务端没装时这里只是空转
 		SinanClientNet.register(settings);
 		// 可选兼容：装了「传送石碑」就把它的石碑同步成路径点（没装时这一层是空操作）
 		WaystoneCompat.register(settings);

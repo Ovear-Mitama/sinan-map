@@ -113,9 +113,6 @@ public final class WaypointEditScreen extends Screen {
 	/** 落点（在地图上右键就是在光标处新建；按 B 是玩家脚下）。 */
 	private final WorldPos createdPos;
 
-	/** 新建时预填的名字；只有"从聊天分享点进来"那一路非空，见构造函数的说明。 */
-	private final String presetName;
-
 	private EditBox nameBox;
 	private EditBox shortBox;
 	private EditBox boxX;
@@ -190,28 +187,19 @@ public final class WaypointEditScreen extends Screen {
 	private int formHeight;
 
 	public WaypointEditScreen(Screen parent, Waypoint editing, WorldPos createdPos) {
-		this(parent, editing, createdPos, null, "");
+		this(parent, editing, createdPos, null);
 	}
 
 	/**
 	 * @param group 新建时预先选中的分组（管理器里"在某个分组下新建"用）；null = 默认分组
 	 */
 	WaypointEditScreen(Screen parent, Waypoint editing, WorldPos createdPos, @Nullable String group) {
-		this(parent, editing, createdPos, group, "");
-	}
-
-	/**
-	 * @param presetName 新建时预填的名字：聊天里点"[添加]"（别人分享过来的路径点）走这一条；平时新建传空字符串
-	 */
-	WaypointEditScreen(Screen parent, Waypoint editing, WorldPos createdPos, @Nullable String group,
-			String presetName) {
 		super(Component.translatable(editing == null
 				? "screen.sinanmap.waypoint.title_new"
 				: "screen.sinanmap.waypoint.title_edit"));
 		this.parent = parent;
 		this.editing = editing;
 		this.createdPos = createdPos;
-		this.presetName = presetName == null ? "" : presetName;
 		this.group = editing != null ? editing.group()
 				: (group == null || group.isBlank() ? Waypoint.DEFAULT_GROUP : group);
 		this.color = editing != null ? editing.color() : Waypoint.DEFAULT_COLOR;
@@ -228,8 +216,7 @@ public final class WaypointEditScreen extends Screen {
 		nameBox = new SinanEditBox(font, inputLeft, top + nameTop, FIELD_WIDTH, ROW_HEIGHT,
 				Component.translatable("screen.sinanmap.waypoint.name"));
 		nameBox.setMaxLength(Waypoint.MAX_NAME_LENGTH);
-		// 新建：只有"从聊天分享点进来"那一路才预填名字，其余留空
-		nameBox.setValue(editing != null ? editing.name() : presetName);
+		nameBox.setValue(editing != null ? editing.name() : "");
 		addRenderableWidget(nameBox);
 
 		shortBox = new SinanEditBox(font, inputLeft, top + shortTop, FIELD_WIDTH, ROW_HEIGHT,
@@ -859,8 +846,7 @@ public final class WaypointEditScreen extends Screen {
 			commitGroupInput();
 		}
 		String shortName = shortBox.getValue().strip();
-		// 基准位置 = 调用方给的那个（地图上右键的那一格 / 玩家脚下）；三个框留空就等于用它，
-		// 填了就用填的（分享过来的路径点 Y 不对时也能在这里校准）
+		// 基准位置 = 调用方给的那个（地图上右键的那一格 / 玩家脚下）；三个框留空就等于用它，填了就用填的
 		WorldPos base = editing != null ? editing.pos() : createdPos;
 		if (base == null) {
 			return;
